@@ -17,7 +17,7 @@ setup(
     # as a package because it contains an __init__.py. This is scalable.
     packages=find_packages(),
     
-    url='https://github.com/useful_scripts', # Update this with the specific URL
+    url='https://github.com/nccr-catalysis-org/nccr_cat_scripts',
     license='GPL-3.0',
     author='Niccolò Ricardi',
     author_email='Niccolo.Ricardi@epfl.ch',
