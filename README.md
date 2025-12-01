@@ -1,4 +1,4 @@
-# useful_scripts
+# nccr_cat_scripts
 
 This repository groups useful scripts for the general NCCR Catalysis community.
 You can keep up to date on addition to this repo with the "Watch" functionality on GitHub.
