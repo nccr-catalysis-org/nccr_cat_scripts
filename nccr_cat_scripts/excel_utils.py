@@ -415,16 +415,17 @@ def read_sheets(file, frmt=None):
     # Determine the read function
     if frmt == "csv":
         # Read csv
-        sheets = {"csv_only_sheet": {"df": pd.read_csv(file)}}
+        fname = os.path.splitext(os.path.split(file)[1])[0]
+        sheets = {fname: {"df": pd.read_csv(file)}}
         # Re-read the file to capture the actual first row as the list of column names
         try:
             # Set header=None and read only the first row
             columns_df = pd.read_csv(file, nrows=1, header=None)
             # Extract the original column names (potentially non-unique)
-            sheets["csv_only_sheet"]["columns"] = columns_df.iloc[0].fillna(value="").astype(str).tolist()
+            sheets[fname]["columns"] = columns_df.iloc[0].fillna(value="").astype(str).tolist()
         except Exception as e:
             logger.warning(f"Could not read first row for original column names in {file}: {e}")
-            sheets["csv_only_sheet"]["columns"] = sheets["csv_only_sheet"]["df"].columns.astype(str).tolist() # Fallback to pandas detected headers
+            sheets[fname]["columns"] = sheets[fname]["df"].columns.astype(str).tolist() # Fallback to pandas detected headers
     elif frmt in ["xlsx", "xls"]:
         sheets = {k: {"df": v} for k, v in pd.read_excel(file, sheet_name=None).items()}
         for sheet_name, dict_ in sheets.items():
@@ -435,7 +436,7 @@ def read_sheets(file, frmt=None):
                 sheets[sheet_name]["columns"] = columns_df.iloc[0].fillna(value="").astype(str).tolist()
             except Exception as e:
                 logger.warning(f"Could not read first row for original column names in {file}: {e}")
-                sheets[sheet_name]["columns"] = sheets[sheet_name]["table"].columns.astype(str).tolist() # Fallback to pandas detected headers
+                sheets[sheet_name]["columns"] = sheets[sheet_name]["df"].columns.astype(str).tolist() # Fallback to pandas detected headers
     else:
          raise InvalidFileFormatError(f"Unsupported format for reading: {frmt}")
 
@@ -476,7 +477,60 @@ def _get_excel_writer_engine(out_format: str) -> str:
     else:
         raise InvalidFileFormatError(f"Unsupported Excel format for writing: {out_format}")
 
-def split_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+def check_and_clean_folderpath(path):
+    assert not os.path.splitext(path)[1], f"It looks like you provided a filepath ({path}), while the code was expecting a folder path."
+    if path.endswith(os.path.sep):
+        path = f"{path}{os.path.sep}"
+    return path
+
+def write_tables(tables_per_sheet, source_file, out_format, destination, inplace, operation, operation_name):
+    basename = os.path.splitext(source_file)[0]
+    if destination:
+        os.makedirs(destination, exist_ok=True)
+    
+    if out_format in ['xlsx', 'xls']:
+        if inplace:
+            out_file = source_file
+        else:
+            if destination:
+                out_file = os.path.join(destination, os.path.split(f"{basename}_{operation}.{out_format}")[1])
+            else:
+                out_file = f"{basename}_{operation}.{out_format}"
+        
+        # Ensure the source_filename is not too long
+        if len(out_file) > 218: 
+             logger.warning(f"Output source_filename {out_file} is too long, truncating.")
+             out_file = os.path.join(destination, f"{basename[:210]}_{operation}.{out_format}")
+
+        # 4. Write Output (XLSX/XLS)
+        try:
+            engine = _get_excel_writer_engine(out_format)
+            with pd.ExcelWriter(out_file, engine=engine) as writer:
+                for sheet_name, tables in tables_per_sheet.items():
+                    for k, table in tables.items():
+                        new_sheet_name = _safe_sheet_name(f"{sheet_name}_{k}")
+                        table.to_excel(writer, sheet_name=new_sheet_name, index=False, header=True)
+            logger.info(f"Successfully {operation_name} from {source_file} to {out_format} sheets in {out_file}")
+        except Exception as e:
+            logger.error(f"Error writing {out_format} output for {source_file}: {e}")
+
+    elif out_format == "csv":
+        # Write each table to a separate CSV source_file
+        fname = list(tables_per_sheet.keys())[0]
+        for k, table in tables_per_sheet[fname].items():
+            safe_k = _safe_sheet_name(k)
+            if destination:
+                out_file = os.path.join(destination, os.path.split(f"{basename}_{operation}_{safe_k}.csv")[1])
+            else:
+                out_file = f"{basename}_{operation}_{safe_k}.csv"
+            table.to_csv(out_file, index=False, header=True)
+        logger.info(f"Successfully {operation_name} from {source_file} into multiple CSV")
+        if inplace:
+            os.remove(source_file)
+    else:
+        logger.error(f"Unsupported output format: {out_format}")
+
+def vsplit_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
     """
     Splits a file containing multiple tables separated by empty columns into 
     individual sheets (if XLSX/XLS) or separate CSV files.
@@ -486,8 +540,11 @@ def split_tables(file, in_format=None, out_format=None, inplace=False, destinati
     except InvalidFileFormatError as e:
         logger.error(f"Skipping split for {file}: {e}")
         return
-    
-    tables_per_sheet = {}
+    if destination:
+        destination = check_and_clean_folderpath(destination)
+        
+    tables_per_sheet: Dict[str, dict]  = {}
+    multi_tables = False
     for sheet_name, data in sheets.items():
         df, original_columns = data["df"], data["columns"]
         start = 0
@@ -495,6 +552,11 @@ def split_tables(file, in_format=None, out_format=None, inplace=False, destinati
         
         # 1. Identify table boundaries (columns that are all NaN)
         empty_cols_indices = [n for n, col in enumerate(df.columns) if df[col].isna().all()]
+        if not empty_cols_indices:
+            logger.info(f"No multiple tables found in sheet {sheet_name} in {file} to split.")
+            tables_per_sheet[sheet_name] = {sheet_name: df}
+            continue
+        multi_tables = True
         table_boundaries = empty_cols_indices + [len(df.columns)]
         
         # 2. Extract tables
@@ -502,168 +564,150 @@ def split_tables(file, in_format=None, out_format=None, inplace=False, destinati
             end = block_end
             if end > start:  # Extract table if block is not empty
                 table = df.iloc[:, start:end].copy()
-                if not any(original_columns[start:end]):
-                    table = table.iloc[1:].reset_index(drop=True)
+                if not any(original_columns[start:end]):  # empty header line
+                    table = table.iloc[1:]
                     key = start
-                elif original_columns[start] and not any(original_columns[start+1:end]):  # table title only
+                elif original_columns[start] and not any(original_columns[start+1:end]):  # table title and column headers
                     key = df.columns[start]
                     table.columns = table.iloc[0].tolist()
-                    table = table.iloc[1:].reset_index(drop=True)  # perhaps redundant as we do not write index, but still cleaner in case of future development
                 else:
                     table.columns = original_columns[start:end]
-                    key = start
+                    key = n + 1
                 tables[key] = table
             start = block_end + 1
-        if not tables:
-            logger.info(f"No tables found in sheet {sheet_name} in {file} to split.")
-            tables_per_sheet[sheet_name] = {sheet_name: df}
         tables_per_sheet[sheet_name] = tables
-
-    # 3. Handle Output Path
-    out_format = in_format if out_format is None else out_format
-    basename = os.path.splitext(file)[0]
-    if destination:
-        os.makedirs(destination, exist_ok=True)
+    if not multi_tables:
+        logger.info(f"No multiple tables at all in {file}")
+        if destination:  # no point in re-writing the file
+            sh.copy2(file, destination)
+        return
     
-    if out_format in ['xlsx', 'xls']:
-        if inplace:
-            outfile = file
-        else:
-            if destination:
-                outfile = os.path.join(destination, os.path.split(f"{basename}_split.{out_format}")[1])
-            else:
-                outfile = f"{basename}_split.{out_format}"
-        
-        # Ensure the filename is not too long
-        if len(outfile) > 218: 
-             logger.warning(f"Output filename {outfile} is too long, truncating.")
-             outfile = os.path.join(destination, f"{basename[:210]}_split.{out_format}")
-
-        # 4. Write Output (XLSX/XLS)
-        try:
-            engine = _get_excel_writer_engine(out_format)
-            with pd.ExcelWriter(outfile, engine=engine) as writer:
-                for sheet_name, tables in tables_per_sheet.items():
-                    for k, table in tables.items():
-                        new_sheet_name = _safe_sheet_name(f"{sheet_name}_{k}")
-                        table.to_excel(writer, sheet_name=new_sheet_name, index=False, header=True)
-            logger.info(f"Successfully split tables from {file} to {out_format} sheets in {outfile}")
-        except Exception as e:
-            logger.error(f"Error writing {out_format} output for {file}: {e}")
-
-    elif out_format == "csv":
-        # Write each table to a separate CSV file
-        for k, table in tables_per_sheet["csv_only_sheet"].items():
-            safe_k = _safe_sheet_name(k)
-            if destination:
-                outfile = os.path.join(destination, os.path.split(f"{basename}_split_{safe_k}.csv")[1])
-            else:
-                outfile = f"{basename}_split_{safe_k}.csv"
-            table.to_csv(outfile, index=False, header=True)
-        logger.info(f"Successfully split tables from {file} into multiple CSV")
-        if inplace:
-            os.remove(file)
-    else:
-        logger.error(f"Unsupported output format: {out_format}")
+    out_format = in_format if out_format is None else out_format
+    write_tables(tables_per_sheet, file, out_format, destination, inplace, "split", "split tables")
 
 
-def split_into_two_colum_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+def vsplit_into_two_colum_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
     """
     Splits a file containing multiple tables into two-column (X, Y) pairs.
     """
     try:
-        df, original_columns, in_format = read_table(file, frmt=in_format)
+        sheets, in_format = read_sheets(file, frmt=in_format)
     except InvalidFileFormatError as e:
         logger.error(f"Skipping 2-column split for {file}: {e}")
         return
-
-    tables: Dict[str, pd.DataFrame] = {}
     
-    # 1. Identify table boundaries (columns that are all NaN)
-    empty_cols_indices = [n for n, col in enumerate(df.columns) if df[col].isna().all()]
-    
-    # Define block start and end indices
-    block_starts = [0] + [i + 1 for i in empty_cols_indices]
-    block_ends = empty_cols_indices + [len(df.columns)]
-    
-    # Filter for valid blocks (start < end)
-    blocks: List[Tuple[int, int]] = [(s, e) for s, e in zip(block_starts, block_ends) if s < e]
-
-    # 2. Extract tables in (X, Y) pairs
-    for start, end in blocks:
-        block_df = df.iloc[:, start:end]
+    tables_per_sheet: Dict[str, dict]  = {}
+    for sheet_name, data in sheets.items():
+        df, original_columns = data["df"], data["columns"]
+        tables: Dict[str, pd.DataFrame] = {}
         
-        # The first column of the block is the X-axis (start).
-        if block_df.shape[1] > 1:
-            x_col_index = start
-            x_col_name_original = original_columns[x_col_index]
+        # 1. Identify table boundaries (columns that are all NaN)
+        empty_cols_indices = [n for n, col in enumerate(df.columns) if df[col].isna().all()]
+        
+        # Define block start and end indices
+        block_starts = [0] + [i + 1 for i in empty_cols_indices]
+        block_ends = empty_cols_indices + [len(df.columns)]
+        
+        # Filter for valid blocks (start < end)
+        blocks: List[Tuple[int, int]] = [(s, e) for s, e in zip(block_starts, block_ends) if s < e]
+    
+        # 2. Extract tables in (X, Y) pairs
+        for start, end in blocks:
+            block_df = df.iloc[:, start:end]
             
-            # Create (X, Y) pairs for all Y columns in this block
-            for y_index_in_block in range(1, block_df.shape[1]):
-                y_col_index = start + y_index_in_block
+            # The first column of the block is the X-axis (start).
+            if block_df.shape[1] > 1:
+                x_col_index = start
+                x_col_name_original = original_columns[x_col_index]
                 
-                y_col_name_original = original_columns[y_col_index] 
-                y_col_name_unique = df.columns[y_col_index] # Unique Pandas name for key
-                
-                # Create the two-column table
-                table = df.iloc[:, [x_col_index, y_col_index]].copy()
-                
-                # Use original column names for the headers
-                table.columns = [x_col_name_original, y_col_name_original]
-                
-                # Use the unique Pandas Y column name as the key
-                key = y_col_name_unique
-                tables[key] = table
-
-    if not tables:
-        logger.info(f"No two-column tables found in {file} to split.")
-        return
+                # Create (X, Y) pairs for all Y columns in this block
+                for y_index_in_block in range(1, block_df.shape[1]):
+                    y_col_index = start + y_index_in_block
+                    
+                    y_col_name_original = original_columns[y_col_index] 
+                    y_col_name_unique = df.columns[y_col_index] # Unique Pandas name for key
+                    
+                    # Create the two-column table
+                    table = df.iloc[:, [x_col_index, y_col_index]].copy()
+                    
+                    # Use original column names for the headers
+                    table.columns = [x_col_name_original, y_col_name_original]
+                    
+                    # Use the unique Pandas Y column name as the key
+                    key = y_col_name_unique
+                    tables[key] = table
+        tables_per_sheet[sheet_name] = tables
 
     # 3. Handle Output Path
     out_format = in_format if out_format is None else out_format
-    basename = os.path.splitext(file)[0]
+    write_tables(tables_per_sheet, file, out_format, destination, inplace, "2col_split", "split into 2 column tables")
     
-    if out_format in ['xlsx', 'xls']:
-        if destination:
-            outfile = destination
-        elif inplace:
-            outfile = file
+def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+    """
+    Splits a file containing multiple tables separated by empty columns into 
+    individual sheets (if XLSX/XLS) or separate CSV files.
+    """
+    try:
+        sheets, in_format = read_sheets(file, frmt=in_format)
+    except InvalidFileFormatError as e:
+        logger.error(f"Skipping split for {file}: {e}")
+        return
+    if destination:
+        destination = check_and_clean_folderpath(destination)
+        
+    tables_per_sheet: Dict[str, dict]  = {}
+    multi_tables = False
+    for sheet_name, data in sheets.items():
+        df, original_columns = data["df"], data["columns"]
+        if sum(bool(x) for x in original_columns) == 1:  # header was actually table title
+            df.columns = df.iloc[0].fillna(value="").astype(str).tolist()
+            df.iloc[0] = original_columns
+        start = 0
+        tables: Dict[str, pd.DataFrame] = {}
+        
+        # 1. Identify table boundaries (columns that are all NaN)
+        empty_rows_indices = [n for n, col in enumerate(df.index) if df.iloc[n].isna().all()]
+        table_boundaries = empty_rows_indices + [len(df.index)]
+        
+        # 2. Extract tables
+        for n, block_end in enumerate(table_boundaries):
+            key = False
+            logger.info(n)
+            end = block_end
+            if end > start:  # Extract table if block is not empty
+                table = df.iloc[start:end, :].copy()
+                table.columns = original_columns
+                row0, row1 = table.iloc[0], table.iloc[1]
+                logger.info(row0.tolist())
+                logger.info(row1.tolist())
+                if sum(bool(pd.notna(x)) for x in row0) == 1:  # only 1 notna => table title
+                    logger.info("case 1")
+                    idx = [n for n, x in enumerate(row0) if pd.notna(x)][0]
+                    key = row0.iloc[idx]
+                    table = table.iloc[1:]
+                    row0 = row1
+                key = n + 1 if not key else key
+                if all(isinstance(x, str) or pd.isna(x) for x in row0):  # not data
+                    table.columns = [str(x) if pd.notna(x) else "" for x in table.iloc[0]]
+                    table = table.iloc[1:]
+                tables[key] = table
+            start = block_end + 1
+        logger.info(tables.keys())
+        if not tables:
+            logger.info(f"No multiple tables found in sheet {sheet_name} in {file} to split.")
+            tables_per_sheet[sheet_name] = {sheet_name: df}
         else:
-            outfile = f"{basename}_2col_split.{out_format}"
-            
-        os.makedirs(os.path.dirname(outfile) or '.', exist_ok=True)
-        
-        if len(outfile) > 218: 
-             logger.warning(f"Output filename {outfile} is too long, truncating.")
-             outfile = f"{basename[:210]}_2col_split.{out_format}"
-
-        # 4. Write Output (XLSX/XLS)
-        try:
-            engine = _get_excel_writer_engine(out_format)
-            with pd.ExcelWriter(outfile, engine=engine) as writer:
-                for k, table in tables.items():
-                    # k is the unique Pandas name (e.g., 'Y.1')
-                    sheet_name = _safe_sheet_name(k)
-                    table.to_excel(writer, sheet_name=sheet_name, index=False, header=True)
-            logger.info(f"Successfully split into two-column tables from {file} to {out_format} sheets in {outfile}")
-        except Exception as e:
-            logger.error(f"Error writing {out_format} output for {file}: {e}")
-
-    elif out_format == "csv":
-        # Write each table to a separate CSV file in a new directory
-        output_dir = os.path.splitext(file)[0] + "_2col_split_csv" if destination is None else destination
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for k, table in tables.items():
-            safe_k = _safe_sheet_name(k).lower()
-            outfile = os.path.join(output_dir, f"{safe_k}.csv")
-            table.to_csv(outfile, index=False, header=True)
-        logger.info(f"Successfully split tables from {file} into multiple 2-column CSV files in directory: {output_dir}")
-    else:
-        logger.error(f"Unsupported output format: {out_format}")
-
-
-
+            multi_tables = True
+        tables_per_sheet[sheet_name] = tables
+    if not multi_tables:
+        logger.info(f"No multiple tables at all in {file}")
+        if destination:  # no point in re-writing the file
+            sh.copy2(file, destination)
+        return
+    
+    out_format = in_format if out_format is None else out_format
+    write_tables(tables_per_sheet, file, out_format, destination, inplace, "split", "split tables")
+    
 # =============================================================================
 # Checking function 
 # =============================================================================
