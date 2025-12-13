@@ -958,16 +958,24 @@ def process_recursively(path: str, file_func: Callable[..., None], destination=N
 
     if is_dir:
         source_fol: str = path
-        for fol, _, files in os.walk(source_fol):
+        for fol, subfols, files in os.walk(source_fol):
+            if destination:
+                correspfol = fol.replace(source_fol, destination)
+            for subfol in subfols:
+                os.makedirs(os.path.join(correspfol, subfol), exist_ok=True)
             for file in files:
                 file_path: str = os.path.join(fol, file)
                 if file.lower().endswith(TABULAR_EXTENSIONS):
                     logger.info(f"Processing file: {file_path}")
                     try:
-                        file_func(file_path, destination=destination,
+                        # dest_path = None if destination is None else os.path.join(correspfol, file)
+                        dest_path = None if destination is None else correspfol
+                        file_func(file_path, destination=dest_path,
                                   out_format=out_format, inplace=inplace)
                     except Exception as e:
                         logger.error(f"Failed to process {file_path}: {e}")
+                elif not inplace:
+                    sh.copy2(file_path, os.path.join(correspfol, file))
     elif is_file:
         if not path.lower().endswith(TABULAR_EXTENSIONS):
              logger.error(f"File {path} is not a supported tabular format ({', '.join(TABULAR_EXTENSIONS)}).")
