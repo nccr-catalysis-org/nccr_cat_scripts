@@ -1075,7 +1075,7 @@ def cli():
         '--out-format',
         type=str,
         dest='out_format',
-        help='The output format for split operations (used only with *split options). Examples: .csv, .json, .txt'
+        help='The output format for split operations (used only with splitting table options). You can use csv, tsv, xlsx, xls'
     )
 
     # 2. Mutually Exclusive Group for output location (Required for PROCESS)
