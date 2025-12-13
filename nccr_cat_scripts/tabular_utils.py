@@ -34,7 +34,7 @@ logger.addHandler(handler)
 # 1. Sheet Name part (optional, group 1): (?:'([^']+)'!)? OR ([A-Za-z0-9_]+!)?
 #    - We use the simpler version here: capture (SheetName!)? or (CellRef)
 CELL_REF_REGEX: Pattern[str] = re.compile(r"((?:'[^']+'!)?|(?:\w+!)?)([A-Z]+)(\d+)")
-PROCESS_EXTENSIONS: Tuple[str, ...] = (".xlsx", ".xls") 
+PROCESS_EXTENSIONS: Tuple[str, ...] = ("xlsx", "xls") 
 SEP_EXTENSIONS: Tuple[str, ...] = ("csv", "tsv")
 EXT_TO_SEP = {"csv": ",", "tsv": "\t"}
 TABULAR_EXTENSIONS: Tuple[str, ...] = PROCESS_EXTENSIONS + SEP_EXTENSIONS
@@ -383,7 +383,7 @@ def unpad_strip_file(source_path, dest_path, ext, unpad, strip_text):
                 logger.error(f"Error copying non-Excel file {source_path}: {e}")
                 
 def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_text: bool):
-    """Recursively processes all Excel files in a folder."""
+    """Recursively processes all tabular data files in a folder."""
     source_fol = os.path.abspath(source_fol)
     dest_fol = os.path.abspath(dest_fol)
     
@@ -402,10 +402,12 @@ def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_t
             os.makedirs(os.path.join(correspfol, subfol), exist_ok=True)
         
         for file in files:
-            ext = os.path.split(file.lower())[1]
+            ext = os.path.splitext(file.lower())[1][1:]
+            logger.info(f"ext is {ext}")
             if ext in TABULAR_EXTENSIONS:
                 source_path = os.path.join(fol, file)
                 dest_path = os.path.join(correspfol, file)
+                logger.info(f"unpadding and/or stripping {source_path}")
                 unpad_strip_file(source_path, dest_path, ext, unpad, strip_text)
                 
     logger.info(f"--- Folder Process Complete: {os.path.basename(dest_fol)} ---")
@@ -513,7 +515,7 @@ def check_csv_file(filename: str, check_padding: bool, check_strip: bool, sep=",
     Returns:
         A dictionary of issues found, or None if no issues found or file is not Excel/error occurred.
     """
-    ext = os.path.splitext(filename.lower())[1]
+    ext = os.path.splitext(filename.lower())[1][1:]
     if ext not in SEP_EXTENSIONS:
         return None
         
@@ -552,13 +554,13 @@ def check_file(full_path, ext, check_padding, check_strip, folder_path=None):
     if ext in SEP_EXTENSIONS:
         issues = check_csv_file(full_path, check_padding, check_strip, sep=EXT_TO_SEP[ext])
     elif ext == "xlsx":
+        logger.info("running check_xlsx")
         issues = check_xlsx_file(full_path, check_padding, check_strip)
     elif ext == "xls":
         issues = check_xls_file(full_path, check_padding, check_strip)
     else:
         issues = False
     if issues:
-        found_issues = True
         relative_path = os.path.relpath(full_path, folder_path) if folder_path else full_path
         logger.warning(f"\n[ISSUE FOUND]: {relative_path}")
         
@@ -577,7 +579,7 @@ def check_file(full_path, ext, check_padding, check_strip, folder_path=None):
                     more = f"... (+{len(detail['strip_cells']) - 5} more)" if len(detail['strip_cells']) > 5 else ""
                     logger.warning(f"    - Sheet '{sheet}': e.g., {', '.join(coords)}{more}")
         logger.debug("done")
-    return found_issues
+    return issues
 
 def check_recursively(folder_path: str, check_padding: bool, check_strip: bool):
     """
@@ -593,7 +595,7 @@ def check_recursively(folder_path: str, check_padding: bool, check_strip: bool):
     
     for fol, _, files in os.walk(folder_path):
         for file in files:
-            ext = os.path.splitext(file.lower())[1]
+            ext = os.path.splitext(file.lower())[1][1:]
             if ext in TABULAR_EXTENSIONS:
                 full_path = os.path.join(fol, file)
                 issues_in_file = check_file(full_path, ext, check_padding, check_strip, folder_path=folder_path)
@@ -615,7 +617,7 @@ def read_sheets(file, frmt=None):
     """
     file_lower = file.lower()
     if frmt is None:
-        ext = os.path.splitext(file_lower)[1]
+        ext = os.path.splitext(file_lower)[1][1:]
         if ext in TABULAR_EXTENSIONS:
             frmt = ext
         else:
@@ -665,14 +667,14 @@ def check_multitable_df(df, file, sheet=None):
             empty_cols.append(n)
 
     empty_rows = []
-    for n, i in df.index:
+    for n, i in enumerate(df.index):
         if df.iloc[n].isna().all():
             empty_rows.append(n)
     
-    if any(empty_cols, empty_rows):
+    if any([empty_cols, empty_rows]):
         columns_bit = f"columns at indices {empty_cols} " if empty_cols else ""
         rows_bit = f"rows at indices {empty_rows} " if empty_rows else ""
-        bit = f"{columns_bit} {'and ' if empty_cols and empty_rows else ''} {rows_bit}"
+        bit = f"{columns_bit}{'and ' if empty_cols and empty_rows else ''}{rows_bit}"
         sheet_bit = f", sheet {sheet}" if sheet else ""
         logger.warning(f"Multiple tables issue in {file}{sheet_bit}: {bit}are empty and suggest a table split.")
         return True
@@ -684,12 +686,12 @@ def check_multitable_file(fname, ext):
     if ext in PROCESS_EXTENSIONS:
         dfs = pd.read_excel(fname, sheet_name=None)
         for sheet_name, df in dfs.items():
-            check_multitable_df(df, fname)
+            check_multitable_df(df, fname, sheet=sheet_name)
             
 def check_multitable_recursively(folder):
     for folder, subfolders, files in os.walk(folder):
         for file in files:
-            ext = os.path.splitext(file.lower())[1]
+            ext = os.path.splitext(file.lower())[1][1:]
             if ext in TABULAR_EXTENSIONS:
                 fname = os.path.join(folder, file)
                 check_multitable_file(fname, ext)
@@ -749,17 +751,17 @@ def write_tables(tables_per_sheet, source_file, out_format, destination, inplace
         except Exception as e:
             logger.error(f"Error writing {out_format} output for {source_file}: {e}")
 
-    elif out_format == "csv":
+    elif out_format in SEP_EXTENSIONS:
         # Write each table to a separate CSV source_file
         fname = list(tables_per_sheet.keys())[0]
         for k, table in tables_per_sheet[fname].items():
             safe_k = _safe_sheet_name(k)
             if destination:
-                out_file = os.path.join(destination, os.path.split(f"{basename}_{operation}_{safe_k}.csv")[1])
+                out_file = os.path.join(destination, os.path.split(f"{basename}_{operation}_{safe_k}.{out_format}")[1])
             else:
-                out_file = f"{basename}_{operation}_{safe_k}.csv"
-            table.to_csv(out_file, index=False, header=True)
-        logger.info(f"Successfully {operation_name} from {source_file} into multiple CSV")
+                out_file = f"{basename}_{operation}_{safe_k}.{out_format}"
+            table.to_csv(out_file, index=False, header=True, sep=EXT_TO_SEP[out_format])
+        logger.info(f"Successfully {operation_name} from {source_file} into multiple {out_format.upper()}")
         if inplace:
             os.remove(source_file)
     else:
@@ -991,7 +993,7 @@ def check_command(args):
     if not os.path.exists(args.source):
         raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
-        ext = os.path.splitext(args.source.lower())[1]
+        ext = os.path.splitext(args.source.lower())[1][1:]
     # Logic for the mutually exclusive options
     if any([args.strip_only, args.unpad_only, args.strip_unpad]):
         check_padding = False if args.strip_only else True
@@ -1014,7 +1016,7 @@ def process_command(args):
     if not os.path.exists(args.source):
         FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
-        ext = os.path.splitext(args.source.lower())[1]
+        ext = os.path.splitext(args.source.lower())[1][1:]
     # Logic for the mutually exclusive options
     if any([args.strip_only, args.unpad_only, args.strip_unpad]):
         if args.out_format:
@@ -1104,29 +1106,22 @@ def cli():
         help='The source file or directory to check.'
     )
     
-    # 2. Optional --inplace argument (removed from exclusion group)
-    parser_check.add_argument(
-        '--inplace',
-        action='store_true',
-        dest='inplace',
-        help='(Optional) Perform a check that modifies files (e.g., fixes simple errors or marks files).'
-    )
     
     # Mutually Exclusive Group for 'process' options
     process_group = parser_process.add_mutually_exclusive_group(required=True)
-    process_group.add_argument('--strip_only', action='store_true', help='Only strip whitespace from cell contents.')
-    process_group.add_argument('--unpad_only', action='store_true', help='Only unpad data to remove column spacing.')
-    process_group.add_argument('--strip_unpad', action='store_true', help='Strip whitespace AND unpad data.')
-    process_group.add_argument('--vsplit_tables', action='store_true', help='Vertically split tables (placeholder).')
-    process_group.add_argument('--vsplit_into_two_columns_tables', action='store_true', help='Vertically split into two columns (placeholder).')
-    process_group.add_argument('--hsplit_tables', action='store_true', help='Horizontally split tables (placeholder).')
+    process_group.add_argument('--strip-only', action='store_true', help='Only strip whitespace from cell contents.')
+    process_group.add_argument('--unpad-only', action='store_true', help='Only unpad data to remove column spacing.')
+    process_group.add_argument('--strip-unpad', action='store_true', help='Strip whitespace AND unpad data.')
+    process_group.add_argument('--vsplit-tables', action='store_true', help='Vertically split tables (placeholder).')
+    process_group.add_argument('--vsplit-into-two-columns-tables', action='store_true', help='Vertically split into two columns (placeholder).')
+    process_group.add_argument('--hsplit-tables', action='store_true', help='Horizontally split tables (placeholder).')
     
     # Mutually Exclusive Group for 'check' options
     check_group = parser_check.add_mutually_exclusive_group(required=True)
-    check_group.add_argument('--strip_only', action='store_true', help='Check only for cells needing strip.')
-    check_group.add_argument('--unpad_only', action='store_true', help='Check only for padding issues.')
-    check_group.add_argument('--strip_unpad', action='store_true', help='Check for both strip and unpad issues.')
-    check_group.add_argument('--multi_table', action='store_true', help='Check for multiple tables in a single file.')
+    check_group.add_argument('--strip-only', action='store_true', help='Check only for cells needing strip.')
+    check_group.add_argument('--unpad-only', action='store_true', help='Check only for padding issues.')
+    check_group.add_argument('--strip-unpad', action='store_true', help='Check for both strip and unpad issues.')
+    check_group.add_argument('--multi-table', action='store_true', help='Check for multiple tables in a single file.')
 
     # Parse arguments and call the corresponding function
     if len(sys.argv) == 1:
