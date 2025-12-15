@@ -124,6 +124,9 @@ If you do not know how to use a command you can run
 
 or check this documentation.
 
+# a general point on processing
+A lot of operations in this module can be performed either in place or providing a destination. If the operation is performed on a file, inplace overwrites the file while destination creates a processed file - whatever the processing is - at the destination. For folders, inplace acts on the files in the folder and its subfolders recursively (i.e. further down the folder tree) , while providing a destination produces a copy of the desired folder and its subfolders recursively where the files that match the appropriate characteristics (extension or specific details of the content) have been processed.
+
 # zip_utils
 
 Functionalities concerning zip files particularly with regards to Zenodo datasets.
@@ -167,7 +170,9 @@ To use the CLI:
 `zip-utils clean /path/to/file --output-filepath /path/to/output` or `zip-utils clean /path/to/file --in-place`
 
 # Tabular utils
-Functionalities to check and correct specific recurring issues with tabular data files. It can handle csv, tsv, xlsx and xls. Nonetheless, formulas within .xls files cannot be read and processed and will be lost if the file is processed. As such, using xlsx is recommended.
+Functionalities to check and correct specific recurring issues with tabular data files. It can handle csv, tsv, xlsx and - to some extent - xls. 
+Formulas within .xls files cannot be read and processed and will be lost if the file is processed. 
+Furthermore, with newer versions of pandas, .xls can be read but not written. As such, using xlsx is strongly recommended over .xls. If writing to .xls is necessary, you have to downgrade pandas to <1.5.
 
 The module deals with the following bad practices.
 **Padded tables:** tables padded with empty space around them reduce machine readability.
@@ -175,7 +180,7 @@ The module deals with the following bad practices.
 **Multiple tables:** sheets containing more than one table reduce machine readability. The module uses empty columns and rows to detect and process multiple tables in a sheet. For the moment, only vertically or hortizontally split multiple tables are treated. Presence of both directional splits may be implemented later.
 
 ## CLI
-The CLI command for tabular utils is `tab-utils`. This must be followed by a command: either `check` or `process`.
+The CLI command for tabular utils is `tab-utils`. This must be followed by a command: either `check`, `process`, or `convert`.
 Both commands need a positional argument "source" which can be either a file or a folder. In the latter case, it will act on all files within the folder and recursively in its subfolders.
 
 Examples:
@@ -185,7 +190,8 @@ tab-utils check --strip-unpad folder
 tab-utils check --multi-table folder
 tab-utils process --stip-unpad folder --inplace
 tab-utils process --stip-unpad folder --destination folder_processed
-tab-utils process --vsplit-tables file.xls --out-format xlsx 
+tab-utils process --vsplit-tables file.xls --out-format xlsx
+tab-utils convert --out_format --destination file.xlsx --
 ```
 
 ### Check options
@@ -222,11 +228,19 @@ For any block delimited by an empty column, obtains a series of 2-columns tables
 #### hsplit-tables
 This splits the tables at every empty row. If a table-name header is present above the column headers, it will detect the table name and use it to name the sheets. Examples will be provided soon for more clarity.
 
+### Convert options
+```
+--inplace  # to conver in place, i.e. replace the file you are converting
+--destination  # where to place a copy of the folder where files have been converted
+--out-format  # the desired output format
+--in-format  # when working on a folder, only convert folders of this type
+```
+
 ## Python usage
 The main forward-facing functions are listed below.
 
 ### Checking
-The functions to check are:
+The forward-facing functions to check are:
 ```
 check_file(file, extension, check_padding, check_strip)  # the last two are booleans about whether you want to check the padding and the stripping
 check_recursively(folder, check_padding, check_strip)
@@ -235,7 +249,7 @@ check_multitable_folder(folder)
 ```
 
 ### Processing
-The main functions to process are:
+The main forward-facing functions to process are:
 ```
 unpad_strip_file(file, dest, ext, unpad, strip_text)  # provide dest == file to edit inplace. unpad and strip_text are booleans controlling what you want to perform
 unpad_strip_recursively(folder, dest, unpad, strip_text)
@@ -243,6 +257,13 @@ vsplit_tables(file, in_format=[extension, optional], out_format=[desired output 
 vsplit_into_two_colum_tables(file, in_format=[extension, optional], out_format=[desired output format, optional], inplace=args.inplace, destination=[destination path, optional])
 hsplit_tables(file, in_format=[extension, optional], out_format=[desired output format, optional], inplace=args.inplace, destination=[destination path, optional])
 process_recursively(folder,split_func, out_format=None, destination=None, inplace=False)  # split func is one of the 3 functions above, the other arguments are described in the lines above
+```
+
+### Converting
+The main forward-facing functions to convert are:
+```
+convert_file(file, out_format=None, destination=None, inplace=False)
+process_recursively(folder,convert_file, out_format=None, destination=None, inplace=False, in_format=None)
 ```
 
 
