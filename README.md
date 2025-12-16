@@ -238,6 +238,7 @@ This detects and splits tables in both dimensions. Nonetheless, the use of vspli
 --destination  # where to place a copy of the folder where files have been converted
 --out-format  # the desired output format
 --in-format  # when working on a folder, only convert folders of this type
+--separator # the separator used in tabular data (default is comma for csv, tab for tsv, space for txt and dat)
 ```
 
 ## Python usage
