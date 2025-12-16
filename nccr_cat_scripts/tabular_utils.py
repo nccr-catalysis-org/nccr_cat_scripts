@@ -1055,7 +1055,7 @@ def get_tables_df(df):
     bool_df = df.notna()
     table_edges = detect_table_edges(bool_df)
     tables = {}
-    if len(table_edges):
+    if len(table_edges) == 1:
         return {"": df}
     for n, edges in enumerate(table_edges):
         key = False
