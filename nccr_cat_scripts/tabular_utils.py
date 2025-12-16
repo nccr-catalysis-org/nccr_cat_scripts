@@ -7,6 +7,7 @@ Created on Wed Nov 26 16:44:53 2025
 """
 
 import argparse
+from itertools import product
 import logging
 import os
 import re
@@ -14,6 +15,8 @@ import shutil as sh
 import sys
 from typing import Any, Callable, Dict, List, Match, Optional, Pattern, Tuple
 
+
+import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, get_column_letter
@@ -985,7 +988,78 @@ def convert_file(file, out_format=None, destination=None, inplace=False):
         raise InvalidFileFormatError("Unsupported output format {out_format}")
     if inplace:
         os.remove(file)
-                    
+
+def detect_table(bool_df, point):
+    x, y = point
+    edges = np.array([[x, x], [y, y]])
+    nrows, ncols = bool_df.shape
+    maxs = ncols -1, nrows -1 
+    while True:
+        changed = False
+        for n in range(2):  # x or y
+            for m in range(2):  # first or second edge
+                incr = 1 if m else -1
+                new_edges = edges.copy()
+                if 0 <= new_edges[n,m] + incr <=  maxs[n]:
+                    new_edges[n, m] += incr
+                else:
+                    continue
+                if n:
+                    non_empty = bool_df.iloc[new_edges[1,m], new_edges[0,0]:new_edges[0,1] + 1].any()
+                else:
+                    non_empty = bool_df.iloc[new_edges[1,0]:new_edges[1,1]+1, new_edges[0,m]].any()
+                if non_empty:
+                    changed = True
+                    edges = new_edges
+        if not changed:
+            break
+    return edges
+            
+def slice_table(df, edges):
+    return df.iloc[edges[1,0]: edges[1,1] + 1, edges[0,0]: edges[0,1] + 1]
+
+def point_in_table(edges, point, padding=False, nrows=None, ncols=None):
+    edges_cp = edges.copy()
+    if padding:
+        if nrows is None or ncols is None:
+            raise ValueError("if you want padding, you must provide nrows and ncols")
+        if edges_cp[0, 0]:
+            edges_cp[0,0] -= 1
+        if edges_cp[1, 0]:
+            edges_cp[1, 0] -= 1
+        if edges_cp[1,0] < ncols:
+            edges_cp[1,0] += 1
+        if edges_cp[1,1] < nrows:
+            edges_cp[1,1] += 1
+    return edges_cp[0,0] <= point[0] <= edges_cp[0,1] and edges_cp[1,0] <= point[1] <= edges_cp[1,1]
+
+def point_in_any_table(edges_list, point, padding=False, nrows=None, ncols=None):
+    for edges in edges_list:
+        in_table = point_in_table(edges, point, padding=padding, nrows=nrows, ncols=ncols)
+        if in_table:
+            return True
+    return False
+
+def detect_table_edges(bool_df):
+    nrows, ncols = bool_df.shape
+    coords = product(range(ncols), range(nrows))
+    seen = set()
+    table_edges = []
+    for point in coords:
+        if bool_df.iloc[point[1], point[0]] and (point not in seen) and not point_in_any_table(table_edges, point, padding=True, nrows=nrows, ncols=ncols):
+            print(f"detecting from {point}")
+            new_table_edges = detect_table(bool_df, point)
+            table_edges.append(new_table_edges)
+            print(f"appended {new_table_edges}")
+        seen.add(point)
+    return table_edges
+
+def get_tables(df):
+    bool_df = df.notna()
+    table_edges = detect_table_edges(bool_df)
+    tables = [slice_table(df, edges) for edges in table_edges]
+    return tables
+
 def process_recursively(path: str, file_func: Callable[..., None], destination=None,
                         out_format=None, inplace=False, format_to_process=None) -> None:
     """
