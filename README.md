@@ -129,7 +129,20 @@ A lot of operations in this module can be performed either in place or providing
 
 # zip_utils
 
-Functionalities concerning zip files particularly with regards to Zenodo datasets.
+Functionalities concerning zip, tar, and rar files particularly with regards to Zenodo datasets.
+
+## A note on rar files
+Extracting rar files requires an external tool (unrar). This is often available by default in your operating system. If it is not available and the program ecounters a rar file, it will raise an error, and suggest you to look at the installation instructions here below.
+### Installing unrar
+For Linux, use your package manager, for Ubuntu / Debian:
+```
+sudo apt install unrar
+```
+For Mac OS:
+```
+Ubuntu / Debian
+```
+For Windows, download the executable [here](https://www.rarlab.com/rar/unrarw64.exe) and place it your PATH (same as described in solution 2 of [Troubleshooting: 'pip' command not found (Windows)](https://github.com/nccr-catalysis-org/nccr_cat_scripts/blob/master/README.md#troubleshooting-pip-command-not-found-windows)
 
 ## Recursive extraction
 
