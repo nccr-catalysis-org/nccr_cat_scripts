@@ -11,7 +11,7 @@ For any feedback, to report a bug, or to request a feature, contact: [admin@nccr
 1\. Installation Guide for Beginners
 ------------------------------------
 
-To install and use these scripts, you only need two prerequisites: **Python** and **Git**. You **do not** need a GitHub account, as this repository is public.
+To install and use these scripts, you only need two prerequisites: **Python (3.8 or higher)** and **Git**. You **do not** need a GitHub account, as this repository is public.
 
 ### Step 1: Install Python (and Pip)
 
@@ -19,8 +19,8 @@ Python 3 is required. The installation process for Python typically includes **P
 
 | **Operating System** | **How to Install Python** |
 | --- | --- |
-|   **Windows**   |   1\. Go to the [Official Python Website](https://www.python.org/downloads/windows/ "null").      2\. Download the latest Python 3 installer.      3\. **CRUCIAL STEP:** During installation, make sure to check the box that says **"Add Python to PATH"** before clicking "Install Now."   |
-|   **macOS**   |   1\. Go to the [Official Python Website](https://www.python.org/downloads/macos/ "null").      2\. Download the latest Python 3 installer.      3\. Run the installer package.   |
+|   **Windows**   |   1\. Go to the [Official Python Website](https://www.python.org/downloads/windows/ "null").      2\. Download the latest Python 3 installer (in any case **3.8 or more**).      3\. **CRUCIAL STEP:** During installation, make sure to check the box that says **"Add Python to PATH"** before clicking "Install Now."   |
+|   **macOS**   |   1\. Go to the [Official Python Website](https://www.python.org/downloads/macos/ "null").      2\. Download the latest Python 3 installer (in any case **3.8 or more**).      3\. Run the installer package.   |
 |   **Linux (Ubuntu/Debian)**   |   Most distributions come with Python pre-installed. You can ensure you have Python 3 and Pip by running the following commands in your terminal:      `sudo apt update`      `sudo apt install python3 python3-pip`   |
 
 **Verification:** Open your command line (Terminal on Mac/Linux, Command Prompt/PowerShell on Windows) and type:
@@ -109,7 +109,7 @@ To use the functions in your own scripts, import as follows:
 
 ```from nccr_cat_scripts import [module name]```
 
-where `[module name]` is any of the modules documented below (zip_utils, excel_utils).
+where `[module name]` is any of the modules documented below (zip_utils, tabular_utils).
 
 # Command Line Interface (CLI)
 Every module can be called in the command line. Generally this is just the module name but where "_" has been replaced with "-".
@@ -142,7 +142,7 @@ If the filepath is a .zip file (e.g. a Zenodo dataset downloaded), it will extra
 To use the CLI:
 
 ```
-zip-utils extract --path /path/to/extract [--remove-zips]
+zip-utils extract /path/to/extract [--remove-zips]
 ```
 
 where `/path/to/extract` is the filepath to extract and the optional flag `--remove-zips` removes the zip files after successful extraction.
@@ -155,7 +155,7 @@ The function `zip_appropriately(input_path, output_path)` copies files from `inp
 To use the CLI:
 
 ```
-zip-utils zip --source_dir /path/to/source/dir --target_dir /path/to/target/dir
+zip-utils zip /path/to/source/dir /path/to/target/dir
 ```
 
 ## Cleaning
