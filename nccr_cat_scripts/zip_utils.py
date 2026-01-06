@@ -67,8 +67,15 @@ def is_single_root_folder(archive_fp, ext=None):
                 namelist = f.namelist()
         
         elif ext == "rar":
-            with rarfile.RarFile(archive_fp, "r") as f:
-                namelist = f.namelist()
+            try:
+                with rarfile.RarFile(archive_fp, "r") as f:
+                    namelist = f.namelist()
+            except rarfile.RarCannotExec:
+                logger.error(
+                f"Cannot extract {os.path.basename(archive_fp)}. "
+                "The 'unrar' system utility is missing. "
+                "Please install it. Check https://github.com/nccr-catalysis-org/nccr_cat_scripts/blob/master/README.md#installing-unrar"
+            )
         
         elif ext in [".tar.gz", ".tgz", ".tar"]:
             with tarfile.open(archive_fp, "r") as f:
@@ -123,17 +130,24 @@ def extract_zip(zip_fp, extraction_path, remove_archives, extracted=None):
     
 
 def extract_rar(rar_fp, extraction_path, remove_rars, extracted=None):
-    with rarfile.RarFile(rar_fp, "r") as f:
-        for member in f.namelist():
-            # Exclude SYSTEM_FILES_TO_IGNORE entries
-            if member.startswith(tuple(SYSTEM_FILES_TO_IGNORE)):
-                continue
-            
-            # Sanitize the path before extraction
-            _sanitize_member_path(member, extraction_path)
-            
-            # Extract the member
-            f.extract(member, path=extraction_path)
+    try:
+        with rarfile.RarFile(rar_fp, "r") as f:
+            for member in f.namelist():
+                # Exclude SYSTEM_FILES_TO_IGNORE entries
+                if member.startswith(tuple(SYSTEM_FILES_TO_IGNORE)):
+                    continue
+                
+                # Sanitize the path before extraction
+                _sanitize_member_path(member, extraction_path)
+                
+                # Extract the member
+                f.extract(member, path=extraction_path)
+    except rarfile.RarCannotExec:
+        logger.error(
+        f"Cannot extract {os.path.basename(rar_fp)}. "
+        "The 'unrar' system utility is missing. "
+        "Please install it. Check https://github.com/nccr-catalysis-org/nccr_cat_scripts/blob/master/README.md#installing-unrar"
+    )
     
     if extracted is not None:
         extracted.add(rar_fp)
