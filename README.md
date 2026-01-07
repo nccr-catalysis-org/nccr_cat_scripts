@@ -116,15 +116,17 @@ Every module can be called in the command line. Generally this is just the modul
 Then a command needs to be given to specify what function to run. You can see which commands are available by running 
 
 ```module-name --help```
+or
+``` module-name -h```
 
 or by reading the section of this documentation that concerns that module.
 If you do not know how to use a command you can run
 
-`module-name [command] --help`
+`module-name [command] --help` or `module-name [command] -h`
 
 or check this documentation.
 
-# a general point on processing
+# A general point on processing
 A lot of operations in this module can be performed either in place or providing a destination. If the operation is performed on a file, inplace overwrites the file while destination creates a processed file - whatever the processing is - at the destination. For folders, inplace acts on the files in the folder and its subfolders recursively (i.e. further down the folder tree) , while providing a destination produces a copy of the desired folder and its subfolders recursively where the files that match the appropriate characteristics (extension or specific details of the content) have been processed.
 
 # zip_utils
@@ -285,4 +287,38 @@ convert_file(file, out_format=None, destination=None, inplace=False)
 process_recursively(folder,convert_file, out_format=None, destination=None, inplace=False, in_format=None)
 ```
 
+# text-enc
+Functionalities concerning text-encoding.
+Since UTF-8 is the main standard, all encodings are converted to UTF-8.
 
+## CLI
+The only command for this module is "convert". 
+
+You can convert an individual file or all files of a subset of formats within a folder recursively. For instance:
+```
+text-enc convert /folder/file --inplace  # converting a single file overwriting its content
+text-enc convert /folder/subfolder --inplace  # converting all files in subfolder overwriting their content
+```
+
+When converting files, the destination can be a filepath or a folder. In the latter case the string "_utf8" will be inserted just before the file extension
+```
+text-enc convert /folder/file.txt --destination /another/folder/file_converted.txt # the UTF-8 file is written at the desired destination
+text-enc convert /folder/file.txt --destination /another/folder # the UTF-8 file is written at /another/folder/file_utf8.txt
+```
+When converting all files within a folder, if the destination is not provided and inplace is not set, the name of the original folder with the addition of "_utf8" is used.
+```
+text-enc convert /folder/subfolder # the structure of /folder/subfolder is reproduced, with UTF-8 files, at /folder/subfolder_utf8
+```
+The option `--formats` allows to provide a comma-separated list of formats to convert. The default is "txt".
+```
+text-enc convert /folder/subfolder --inplace --formats dat,txt # Conver both .txt and .dat.
+```
+The option `--enc` allows to provide the encoding, if known or consistent. If possible, it is better to use this option: not only it makes the conversion faster, but it makes it more robust. This is because if no encoding is provided, the code tries with several encodings and verifies that it does not get any character other than latin, latin extended, greek, and scientific symbols. If your text includes other scripts (e.g. cyrillic) it is extremely important that you select the encoding.
+
+## Python usage
+The main outward-facing functions are:
+```
+process_file(filepath, enc=None, inplace=None, dest=None)
+process_recursively(path, formats=None, enc=None, inplace=False, dest=None)
+```
+```
