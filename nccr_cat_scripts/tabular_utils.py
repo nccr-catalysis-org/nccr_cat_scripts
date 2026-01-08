@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Match, Optional, Pattern, Tuple
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.helpers.cell import column_index_from_string, get_column_letter
+from openpyxl.utils.cell import column_index_from_string, get_column_letter
 from nccr_cat_scripts import helpers
 
 # --- Logger Setup ---
