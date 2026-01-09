@@ -52,7 +52,7 @@ def decode_scientific(file_path, enc=None):
             # Verify if the content fits our "Scientific/European" universe
             if valid_pattern.match(decoded_text):
                 logger.debug(f"Successfully decoded this file with {encoding}: {file_path}")
-                return enc, decoded_text
+                return encoding, decoded_text
             elif enc:
                 raise EncodingMismatchError(f"This file is not encoded with {encoding}: {file_path}")
             else:
@@ -68,6 +68,7 @@ def decode_scientific(file_path, enc=None):
 def process_file(path, enc=None, inplace=None, dest=None, check_dest=True):
     try:
         encoding, decoded_text = decode_scientific(path, enc=enc)
+        logger.debug(f"encoding: {encoding}")
     except EncodingMismatchError as e:
         logger.error(e)
     except ValueError as e:
@@ -152,17 +153,36 @@ def run_conversion(args):
 
 def cli():
     parser = argparse.ArgumentParser(description="File Encoding Converter")
-    parser.add_argument('command', choices=['convert'], help="Command to execute")
-    parser.add_argument('path', help="Path to the directory or file to process")
-    parser.add_argument('--inplace', action='store_true', help="Overwrite original files")
-    parser.add_argument('--dest', type=str, help="Destination path/directory")
-    parser.add_argument('--enc', type=str, help="Expected encoding. Use it if you know it, it will make the conversion faster and more robust.")
-    parser.add_argument('--formats', type=str, default=".txt", help="Comma-separated extensions")
+    # Add --log to the main parser so it works for all commands
+    parser.add_argument(
+        '--log', '--verbosity', '-l', 
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Set the logging level (default: INFO)'
+    )
+    # Define a subparser to handle different commands (even if for now it is only one)
+    # Use add_subparsers to handle 'process' and 'check' commands
+    subparsers = parser.add_subparsers(
+        title='commands',
+        description='valid commands',
+        help='available actions',
+        required=True
+    )
+    parser_convert = subparsers.add_parser(
+        'convert', 
+        help='Just convert text encoding to UTF-8.'
+    )
+    parser_convert.set_defaults(func=run_conversion)
+    parser_convert.add_argument('path', help="Path to the directory or file to process")
+    parser_convert.add_argument('--inplace', action='store_true', help="Overwrite original files")
+    parser_convert.add_argument('--dest', type=str, help="Destination path/directory")
+    parser_convert.add_argument('--enc', type=str, help="Expected encoding. Use it if you know it, it will make the conversion faster and more robust.")
+    parser_convert.add_argument('--formats', type=str, default=".txt", help="Comma-separated extensions")
 
     args = parser.parse_args()
-
-    if args.command == 'convert':
-        run_conversion(args)
+    numeric_level = getattr(logging, args.log.upper(), logging.INFO)
+    logger.setLevel(numeric_level)
+    args.func(args)
 
 if __name__ == "__main__":
     cli()

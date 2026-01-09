@@ -582,6 +582,15 @@ def cli():
             
         # """
     )
+        
+    # Add --log to the main parser so it works for all commands
+    parser.add_argument(
+        '--log', '--verbosity', '-l', 
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Set the logging level (default: INFO)'
+    )
+    
     # Define a subparser to handle different commands (clean or naked)
     subparsers = parser.add_subparsers(dest='command', required=True)
 
@@ -647,6 +656,8 @@ def cli():
     
     # Parse the arguments and call the handler function
     args = parser.parse_args()
+    numeric_level = getattr(logging, args.log.upper(), logging.INFO)
+    logger.setLevel(numeric_level)
     args.func(args)
 
 

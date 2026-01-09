@@ -954,11 +954,6 @@ def convert_file(file, out_format=None, destination=None, inplace=False, sep=Non
     basename = fname[:-(len(ext)+1)]
     if destination is None:
         destination = folder_path
-    if out_format == ext:
-        if inplace:
-            return
-        else:
-            sh.copy2(file, os.path.join(destination, fname))
     if ext in WIDE_SEP_EXTENSIONS:
         if sep is None:
             sep = EXT_TO_SEP[ext]
@@ -982,7 +977,7 @@ def convert_file(file, out_format=None, destination=None, inplace=False, sep=Non
                     df.to_excel(writer, sheet_name=new_sheet_name, index=False, header=False)
     else:
         raise InvalidFileFormatError("Unsupported output format {out_format}")
-    if inplace:
+    if inplace and ext != out_format:
         os.remove(file)
 
 def detect_table(bool_df, point):
@@ -1222,6 +1217,15 @@ def cli():
         ),
         formatter_class=argparse.RawTextHelpFormatter
     )
+    
+    # Add --log to the main parser so it works for all commands
+    parser.add_argument(
+        '--log', '--verbosity', '-l', 
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Set the logging level (default: INFO)'
+    )
+    
     # Use add_subparsers to handle 'process' and 'check' commands
     subparsers = parser.add_subparsers(
         title='commands',
@@ -1298,7 +1302,7 @@ def cli():
 
     parser_convert = subparsers.add_parser(
         'convert', 
-        help='Just convert tabular data files between different extesions.'
+        help='Just convert tabular data files between different extesions and/or change the separator.'
     )
     parser_convert.set_defaults(func=convert_command)
     
@@ -1349,6 +1353,8 @@ def cli():
         sys.exit(1)
 
     args = parser.parse_args()
+    numeric_level = getattr(logging, args.log.upper(), logging.INFO)
+    logger.setLevel(numeric_level)
     args.func(args)
 
 
