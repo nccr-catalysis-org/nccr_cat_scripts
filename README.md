@@ -248,6 +248,9 @@ This splits the tables at every empty row. If a table-name header is present abo
 This detects and splits tables in both dimensions. Nonetheless, the use of vsplit and hsplit is strongly recommended when possible, because they will be faster and more robust. For instance, a full row of empty values in a vertical table will not cause issues with vsplit, but it will lead to the table being split with "split-all-tables". Nonetheless, if you have grids of tables in more than one dimension, this function allows to split them.
 
 ### Convert options
+The conver command can convert between different formats. Besides relatively trivial conversions such as those between csv and tsv, it can also take the different sheets of an Excel file and save them as individual csv/tsv.
+It can also be helpful when unconventional formats contain tabular data with a custom separator (e.g. .txt or .dat with space/semicolon separated data) or with the wrong separator (e.g. csv with semicolon separated data). You just need to provide the separator used in your source file(s). The separator in the output files is hardcoded to be the standard for the format (comma for csv, tab for tsv).
+
 ```
 --inplace  # to conver in place, i.e. replace the file you are converting
 --destination  # where to place a copy of the folder where files have been converted
