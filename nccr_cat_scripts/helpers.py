@@ -25,3 +25,8 @@ def check_and_clean_folderpath(path):
     if not path.endswith(os.path.sep):
         path = f"{path}{os.path.sep}"
     return path
+
+def harmonize_ext(ext):
+    if ext.startswith("."):
+        return ext[1:]
+    return ext

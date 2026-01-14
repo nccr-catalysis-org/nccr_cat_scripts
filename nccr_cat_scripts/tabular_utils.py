@@ -716,25 +716,40 @@ def _get_excel_writer_engine(out_format: str) -> str:
     else:
         raise InvalidFileFormatError(f"Unsupported Excel format for writing: {out_format}")
 
-def write_tables(tables_per_sheet, source_file, out_format, destination, inplace, operation, operation_name):
-    basename = os.path.splitext(source_file)[0]
-    folder_name = os.path.split(source_file)[0]
-    if destination:
-        os.makedirs(destination, exist_ok=True)
+def write_tables(tables_per_sheet, source_file, out_format, destfol, destfbname,
+                 inplace, operation, operation_name):
+    basename = destfbname if destfbname else os.path.splitext(os.path.split(source_file)[0])[0]
+    basefpath = os.path.splitext(source_file)[0]
+    source_folder = os.path.split(source_file)[0]
+    out_folder = destfol if destfol else source_folder
+    if destfol:
+        os.makedirs(destfol, exist_ok=True)
     
     if out_format in PROCESS_EXTENSIONS:
         if inplace:
             out_file = source_file
         else:
-            if destination:
-                out_file = os.path.join(destination, os.path.split(f"{basename}_{operation}.{out_format}")[1])
+            if destfol:
+                out_file = os.path.join(destfol, f"{basename}_{operation}.{out_format}")
             else:
-                out_file = f"{basename}_{operation}.{out_format}"
+                out_file = f"{basefpath}_{operation}.{out_format}"
         
         # Ensure the source_filename is not too long
         if len(out_file) > 218: 
              logger.warning(f"Output source_filename {out_file} is too long, truncating.")
-             out_file = os.path.join(destination, f"{basename[:210]}_{operation}.{out_format}")
+             tokeep = len(f"_{operation}.{out_format}")
+             if len(out_folder) + len(tokeep) >= 218:
+                 logger.critical("""Cannot write output because the resulting filepath would be more than 218 character(max allowed by Excel)! 
+                                 Find a way to shorten your filepath (shorter folder/filenames, less nesting). Filepath: {source_file}""")
+                 raise ValueError
+             out_file = os.path.join(out_folder, f"{basename[:218-(len(out_folder)+tokeep+1)]}_{operation}.{out_format}")
+             if inplace:
+                 logger.critical("""Cannot write output because the resulting filepath would be more than 218 character(max allowed by Excel)! 
+                                 Find a way to shorten your filepath (shorter folder/filenames, less nesting). Filepath: {source_file}""")
+                 raise ValueError
+             else:
+                 logger.critical("""Had to shorten output filename because the resulting filepath would be more than 218 character(max allowed by Excel)! 
+                                 Shortening can cause overwriting if similar filenames are present. Please verify: {out_file}""")
 
         # 4. Write Output (XLSX/XLS)
         try:
@@ -753,10 +768,7 @@ def write_tables(tables_per_sheet, source_file, out_format, destination, inplace
         for sheet_name, tables in tables_per_sheet.items():
             for k, table in tables.items():
                 safe_k = _safe_sheet_name(k)
-                if destination:
-                    out_file = os.path.join(destination, f"{sheet_name}_{operation}_{safe_k}.{out_format}")
-                else:
-                    out_file = os.path.join(folder_name, f"{basename}_{operation}_{safe_k}.{out_format}")
+                out_file = os.path.join(out_folder, f"{basename}_{operation}_{safe_k}.{out_format}")
                 table.to_csv(out_file, index=False, header=True, sep=EXT_TO_SEP[out_format])
         logger.info(f"Successfully {operation_name} from {source_file} into multiple {out_format.upper()}")
         if inplace:
@@ -764,7 +776,8 @@ def write_tables(tables_per_sheet, source_file, out_format, destination, inplace
     else:
         logger.error(f"Unsupported output format: {out_format}")
 
-def vsplit_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+def vsplit_tables(file, in_format=None, out_format=None, inplace=False,
+                  destfol=None, destfbname=None):
     """
     Splits a file containing multiple tables separated by empty columns into 
     individual sheets (if XLSX/XLS) or separate CSV files.
@@ -774,8 +787,6 @@ def vsplit_tables(file, in_format=None, out_format=None, inplace=False, destinat
     except InvalidFileFormatError as e:
         logger.error(f"Skipping split for {file}: {e}")
         return
-    if destination:
-        destination = helpers.check_and_clean_folderpath(destination)
         
     tables_per_sheet: Dict[str, dict]  = {}
     multi_tables = False
@@ -813,15 +824,18 @@ def vsplit_tables(file, in_format=None, out_format=None, inplace=False, destinat
             start = block_end + 1
         tables_per_sheet[sheet_name] = tables
     if not multi_tables:
-        logger.info(f"No multiple tables at all in {file}")
-        if destination:  # no point in re-writing the file
-            sh.copy2(file, destination)
+        msg_bit = "leaving it unchanged" if inplace else "just copying it"
+        logger.info(f"No multiple tables at all in {file}, {msg_bit}")
+        if destfol:  # no point in re-writing the file
+            sh.copy2(file, destfol)
         return
+    
     out_format = in_format if out_format is None else out_format
-    write_tables(tables_per_sheet, file, out_format, destination, inplace, "vsplit", "split tables vertically")
+    write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "vsplit", "split tables vertically")
 
 
-def vsplit_into_two_colum_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+def vsplit_into_two_colum_tables(file, in_format=None, out_format=None, inplace=False,
+                                 destfol=None, destfbname=None):
     """
     Splits a file containing multiple tables into two-column (X, Y) pairs.
     """
@@ -831,13 +845,20 @@ def vsplit_into_two_colum_tables(file, in_format=None, out_format=None, inplace=
         logger.error(f"Skipping 2-column split for {file}: {e}")
         return
     
+    
     tables_per_sheet: Dict[str, dict]  = {}
+    multi_tables = False
     for sheet_name, data in sheets.items():
         df, original_columns = data["df"], data["columns"]
         tables: Dict[str, pd.DataFrame] = {}
         
         # 1. Identify table boundaries (columns that are all NaN)
         empty_cols_indices = [n for n, col in enumerate(df.columns) if df[col].isna().all()]
+        if not empty_cols_indices:
+            logger.info(f"No multiple tables found in sheet {sheet_name} in {file} to split.")
+            tables_per_sheet[sheet_name] = {sheet_name: df}
+            continue
+        multi_tables = True
         
         # Define block start and end indices
         block_starts = [0] + [i + 1 for i in empty_cols_indices]
@@ -872,12 +893,19 @@ def vsplit_into_two_colum_tables(file, in_format=None, out_format=None, inplace=
                     key = y_col_name_unique
                     tables[key] = table
         tables_per_sheet[sheet_name] = tables
-
+    
+    if not multi_tables:
+        msg_bit = "leaving it unchanged" if inplace else "just copying it"
+        logger.info(f"No multiple tables at all in {file}, {msg_bit}")
+        if destfol:  # no point in re-writing the file
+            sh.copy2(file, destfol)
+        return
+    
     # 3. Handle Output Path
     out_format = in_format if out_format is None else out_format
-    write_tables(tables_per_sheet, file, out_format, destination, inplace, "2col_split", "split into 2 column tables")
+    write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "2col_split", "split into 2 column tables")
     
-def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destination=None):
+def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destfol=None, destfbname=None):
     """
     Splits a file containing multiple tables separated by empty columns into 
     individual sheets (if XLSX/XLS) or separate CSV files.
@@ -887,8 +915,6 @@ def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destinat
     except InvalidFileFormatError as e:
         logger.error(f"Skipping split for {file}: {e}")
         return
-    if destination:
-        destination = helpers.check_and_clean_folderpath(destination)
         
     tables_per_sheet: Dict[str, dict]  = {}
     multi_tables = False
@@ -935,31 +961,32 @@ def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destinat
             multi_tables = True
         tables_per_sheet[sheet_name] = tables
     if not multi_tables:
-        logger.info(f"No multiple tables at all in {file}")
-        if destination:  # no point in re-writing the file
-            sh.copy2(file, destination)
+        msg_bit = "leaving it unchanged" if inplace else "just copying it"
+        logger.info(f"No multiple tables at all in {file}, {msg_bit}")
+        if destfol:  # no point in re-writing the file
+            sh.copy2(file, destfol)
         return
     
     out_format = in_format if out_format is None else out_format
-    write_tables(tables_per_sheet, file, out_format, destination, inplace, "hsplit", "split tables horizontally")
+    write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "hsplit", "split tables horizontally")
 
-def convert_file(file, out_format=None, destination=None, inplace=False, sep=None):
+def convert_file(file, out_format=None, destfol=None, destfbname=None, inplace=False, sep=None):
     if out_format is None:
         raise ValueError("You must select an output format")
-    if destination:
-        os.makedirs(destination, exist_ok=True)
+    if destfol:
+        os.makedirs(destfol, exist_ok=True)
     ext = os.path.splitext(file.lower())[1][1:]
     folder_path, fname = os.path.split(file)
-    basename = fname[:-(len(ext)+1)]
-    if destination is None:
-        destination = folder_path
+    basename = destfbname if destfbname else fname[:-(len(ext)+1)]
+    if destfol is None:
+        destfol = folder_path
     if ext in WIDE_SEP_EXTENSIONS:
         if sep is None:
             sep = EXT_TO_SEP[ext]
         dfs = {basename: pd.read_csv(file, sep=sep, header=None)}
     elif ext in PROCESS_EXTENSIONS:
         dfs = pd.read_excel(file, sheet_name=None, header=None)
-    out_folder = folder_path if inplace else destination
+    out_folder = folder_path if inplace else destfol
     if out_format in STRICT_SEP_EXTENSIONS:
         for sheet_name, df in dfs.items():
             addendum = "" if len(dfs) == 1 else f"_{sheet_name}"
@@ -1185,6 +1212,8 @@ def process_command(args):
         elif os.path.isdir(args.source):
             unpad_strip_recursively(args.source, dest, unpad, strip_text)
     else:
+        out_format = helpers.harmonize_ext(args.out_format)
+        in_format = helpers.harmonize_ext(args.in_format)
         if args.vsplit_tables:
             split_func = vsplit_tables
         elif args.vsplit_into_two_columns_tables:
@@ -1195,9 +1224,12 @@ def process_command(args):
             split_func = split_tables_file
     
         if os.path.isfile(args.source):
-            split_func(args.source, in_format=ext, out_format=args.out_format, inplace=args.inplace, destination=args.destination)
+            if args.in_format:
+                logger.info("You passed a --in-format argument but this will be ignored since your source is a file. The extension will be detected from the filename.")
+            split_func(args.source, in_format=ext, out_format=out_format, inplace=args.inplace, destination=args.destination)
         elif os.path.isdir(args.source):
-            process_recursively(args.source, split_func, out_format=args.out_format, destination=args.destination, inplace=args.inplace)
+            process_recursively(args.source, split_func, out_format=out_format,
+                                format_to_process=in_format, destination=args.destination, inplace=args.inplace)
 
 def convert_command(args):
     if not os.path.exists(args.source):
@@ -1207,9 +1239,17 @@ def convert_command(args):
     if sep:
         sep = args.sep.encode().decode("unicode_escape")
     if os.path.isfile(args.source):
-        convert_file(args.source, out_format=args.out_format, destination=args.destination, inplace=args.inplace, sep=sep)
+        if helpers.is_dir(args.destination):
+            convert_file(args.source, out_format=args.out_format, destfol=args.destination, inplace=args.inplace, sep=sep)
+        elif helpers.is_file(args.destination):
+            destfol, destfname = os.path.split(args.destination)
+            destfbname, _ = os.path.splitext(destfname)
+            ext = _[1:]
+            assert ext == args.out_format, "The destination is a filepath that does not match the desired output format!!"
+            convert_file(args.source, out_format=args.out_format, destfol=args.destination,
+                         destfbname=destfbname, inplace=args.inplace, sep=sep)
     elif os.path.isdir(args.source):
-        process_recursively(args.source, convert_file, destination=args.destination, inplace=args.inplace,
+        process_recursively(args.source, convert_file, destfol=args.destination, inplace=args.inplace,
                             out_format=args.out_format, format_to_process=args.in_format, sep=sep)
 
 def cli():
@@ -1255,6 +1295,13 @@ def cli():
         type=str,
         dest='out_format',
         help='The output format for split operations (used only with splitting table options). You can use csv, tsv, xlsx, xls'
+    )
+    
+    parser_process.add_argument(
+        '--in-format',
+        type=str,
+        dest='in_format',
+        help='The extensions to process if the source is a folder. If empty, it will process {TABULAR_EXTENSIONS}.'
     )
 
     # 2. Mutually Exclusive Group for output location (Required for PROCESS)
