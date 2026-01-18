@@ -1245,15 +1245,19 @@ def convert_command(args):
     if sep:
         sep = args.sep.encode().decode("unicode_escape")
     if os.path.isfile(args.source):
-        if helpers.isdir(args.destination):
-            convert_file(args.source, out_format=args.out_format, destfol=args.destination, inplace=args.inplace, sep=sep)
-        elif helpers.isfile(args.destination):
-            destfol, destfname = os.path.split(args.destination)
-            destfbname, _ = os.path.splitext(destfname)
-            ext = _[1:]
-            assert ext == args.out_format, "The destination is a filepath that does not match the desired output format!!"
-            convert_file(args.source, out_format=args.out_format, destfol=destfol,
-                         destfbname=destfbname, inplace=args.inplace, sep=sep)
+        try:
+            if helpers.isdir(args.destination):
+                convert_file(args.source, out_format=args.out_format, destfol=args.destination, inplace=args.inplace, sep=sep)
+            elif helpers.isfile(args.destination):
+                destfol, destfname = os.path.split(args.destination)
+                destfbname, _ = os.path.splitext(destfname)
+                ext = _[1:]
+                assert ext == args.out_format, "The destination is a filepath that does not match the desired output format!!"
+                convert_file(args.source, out_format=args.out_format, destfol=destfol,
+                             destfbname=destfbname, inplace=args.inplace, sep=sep)
+            logger.info(f"Successfully converted {args.source}")
+        except Exception as e:
+            logger.critical(f"Error encountered while processing {args.source}:\n {e}")
     elif os.path.isdir(args.source):
         process_recursively(args.source, convert_file, destfol=args.destination, inplace=args.inplace,
                             out_format=args.out_format, format_to_process=args.in_format, sep=sep)
