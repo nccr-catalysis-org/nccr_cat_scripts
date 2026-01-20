@@ -6,7 +6,12 @@ Created on Wed Jan  7 16:29:52 2026
 @author: nr
 """
 
+from collections.abc import Collection
 import os
+
+
+def islistlike(obj):
+    return isinstance(obj, Collection) and not isinstance(obj, (str, bytes))
 
 def isfile(path):
     if os.path.exists(path):

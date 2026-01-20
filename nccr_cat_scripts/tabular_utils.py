@@ -7,13 +7,15 @@ Created on Wed Nov 26 16:44:53 2025
 """
 
 import argparse
+import importlib
+import io
 from itertools import product
 import logging
 import os
 import re
 import shutil as sh
 import sys
-from typing import Any, Callable, Dict, List, Match, Optional, Pattern, Tuple
+from typing import Any, Callable, Dict, List, Match, Optional, Pattern, Tuple, Union
 
 
 import numpy as np
@@ -48,6 +50,17 @@ class InvalidFileFormatError(ValueError):
     """Raised when the file content does not match the expected format or schema."""
     pass
 
+class DependencyRelatedError(Exception):
+    """Exception raised when an optional dependency is required but not installed."""
+    pass
+
+class FileNotUnderstoodError(Exception):
+    """Exception raised when the data in the file cannot be parsed or understood"""
+    pass
+
+class OptionNotAllowed(Exception):
+    """Exception raised when the desired output is not allowed"""
+    
 ###############################################################################
 # Openpyxel worksheet handling for unpadding and text stripping
 ###############################################################################
@@ -323,9 +336,13 @@ def unpad_df(df: pd.DataFrame) -> pd.DataFrame:
 def strip_text_df(df: pd.DataFrame) -> pd.DataFrame:
     t = df.copy()
     stripvalue = lambda x: x if not isinstance(x, str) else x.strip()
-    return t.map(stripvalue)
+    return t.map(stripvalue) if hasattr(t, "map") else t.applymap(stripvalue)
 
 def unpad_strip_xls_file(filename: str, outname: str, unpad: bool, strip_text: bool) -> None:
+    if int(pd.__version__.split(".")[0]) >= 2:
+        raise DependencyRelatedError("You are trying to write to xls, which is deprecated. Consider converting to xlsx and then processing as desired. Otherwise, downgrade to pandas 1.5 and install xlwt (pip install xlwt).")
+    if importlib.util.find_spec("xlwt") is None:
+        raise DependencyRelatedError("You are trying to write to xls, which is deprecated. Consider converting to xlsx and then processing as desired. Otherwise, install xlwt (pip install xlwt).")
     if not os.path.exists(filename):
         logger.error(f"File not found: {filename}")
         return False
@@ -333,7 +350,7 @@ def unpad_strip_xls_file(filename: str, outname: str, unpad: bool, strip_text: b
     logger.info(f"Processing: {os.path.basename(filename)} (Unpad: {unpad}, Strip: {strip_text})")
     
     try:
-        dfs = pd.read_excel(filename, sheet_name=None)
+        dfs = pd.read_excel(filename, sheet_name=None, engine="xlrd", header=None)
     except Exception as e:
         logger.error(f"Error loading file {filename}: {e}")
         sh.copy(filename, outname) # Copy source to destination for safety
@@ -346,7 +363,7 @@ def unpad_strip_xls_file(filename: str, outname: str, unpad: bool, strip_text: b
         dfs[name] = df
     with pd.ExcelWriter(outname, engine='xlwt') as writer:
         for name, df in dfs.items():
-            df.to_excel(writer, sheet_name=name, index=False)
+            df.to_excel(writer, sheet_name=name, index=False, header=False)
 
 def unpad_strip_csv_file(filename: str, outname: str, unpad: bool, strip_text: bool, sep=",") -> None:
     if not os.path.exists(filename):
@@ -356,7 +373,7 @@ def unpad_strip_csv_file(filename: str, outname: str, unpad: bool, strip_text: b
     logger.info(f"Processing: {os.path.basename(filename)} (Unpad: {unpad}, Strip: {strip_text})")
     
     try:
-        df = pd.read_csv(filename, sep=sep)
+        df = pd.read_csv(filename, sep=sep, header=None)
     except Exception as e:
         logger.error(f"Error loading file {filename}: {e}")
         sh.copy(filename, outname) # Copy source to destination for safety
@@ -365,13 +382,17 @@ def unpad_strip_csv_file(filename: str, outname: str, unpad: bool, strip_text: b
         df = unpad_df(df)
     if strip_text:
         df = strip_text_df(df)
-    df.to_csv(outname, index=False, sep=sep)
+    df.to_csv(outname, index=False, sep=sep, header=False)
 
 ###############################################################################
 # Format-agnostic unpadding and text stripping and checking
 ###############################################################################
 
 def unpad_strip_file(source_path, dest_path, ext, unpad, strip_text):
+    if helpers.isdir(dest_path):
+        destfname= os.path.split(source_path)[1]
+        dest_path = os.path.join(dest_path, destfname)
+        
     if ext == "xlsx":
         # Process Excel files
         unpad_strip_xlsx_file(source_path, dest_path, unpad, strip_text)
@@ -387,10 +408,11 @@ def unpad_strip_file(source_path, dest_path, ext, unpad, strip_text):
             except Exception as e:
                 logger.error(f"Error copying non-Excel file {source_path}: {e}")
                 
-def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_text: bool):
+def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_text: bool,
+                            in_formats: Optional[Union[List, str]]):
     """Recursively processes all tabular data files in a folder."""
     source_fol = os.path.abspath(source_fol)
-    dest_fol = os.path.abspath(dest_fol)
+    dest_fol = helpers.check_and_clean_folderpath(os.path.abspath(dest_fol))
     
     if not os.path.exists(source_fol):
         logger.error(f"Source folder not found: {source_fol}")
@@ -399,7 +421,15 @@ def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_t
     os.makedirs(dest_fol, exist_ok=True)
     
     logger.info(f"--- Starting Folder Process: {os.path.basename(source_fol)} to {os.path.basename(dest_fol)}/ ---")
-
+    
+    if in_formats:
+        if isinstance(in_formats, str):
+            in_formats = [helpers.harmonize_ext(in_formats)]
+        elif helpers.islistlike(in_formats):
+            in_formats = [helpers.harmonize_ext(i) for i in in_formats]
+    else:
+        in_formats = TABULAR_EXTENSIONS
+        
     for fol, subfols, files in os.walk(source_fol):
         # Create corresponding destination folder
         correspfol = fol.replace(source_fol, dest_fol)
@@ -408,8 +438,7 @@ def unpad_strip_recursively(source_fol: str, dest_fol: str, unpad: bool, strip_t
         
         for file in files:
             ext = os.path.splitext(file.lower())[1][1:]
-            logger.info(f"ext is {ext}")
-            if ext in TABULAR_EXTENSIONS:
+            if ext in in_formats:
                 source_path = os.path.join(fol, file)
                 dest_path = os.path.join(correspfol, file)
                 logger.info(f"unpadding and/or stripping {source_path}")
@@ -425,11 +454,12 @@ def check_xls_file(filename: str, check_padding: bool, check_strip: bool) -> Opt
     Returns:
         A dictionary of issues found, or None if no issues found or file is not Excel/error occurred.
     """
-    if not filename.lower().endswith(".xlsx"):
+    if not filename.lower().endswith(".xls"):
+        logger.info("Not an xls file")
         return None
         
     try:
-        dfs = pd.read_excel(filename, sheet_name=None)
+        dfs = pd.read_excel(filename, sheet_name=None, engine="xlrd")
     except Exception:
         logger.error(f"Could not load file {filename}. Skipping check.")
         return None
@@ -473,9 +503,11 @@ def check_xlsx_file(filename: str, check_padding: bool, check_strip: bool) -> Op
         A dictionary of issues found, or None if no issues found or file is not Excel/error occurred.
     """
     if not filename.lower().endswith(".xlsx"):
+        logger.info("Not an xlsx file")
         return None
         
     try:
+        logger.info(filename)
         wb = load_workbook(filename)
     except Exception:
         logger.error(f"Could not load file {filename}. Skipping check.")
@@ -549,7 +581,7 @@ def check_csv_file(filename: str, check_padding: bool, check_strip: bool, sep=",
             for m, cell in enumerate(row):
                 # Check for text (data_type 's') that starts or ends with space
                 if isinstance(cell, str):
-                    if cell.value.startswith(' ') or cell.value.endswith(' '):
+                    if cell.startswith(' ') or cell.endswith(' '):
                         issues['strip_issues'] = True
                         issues["details"]["only_sheet"]['strip_cells'].append([n + start_row, m + start_col])
         
@@ -570,29 +602,37 @@ def check_file(full_path, ext, check_padding, check_strip, folder_path=None):
         logger.warning(f"\n[ISSUE FOUND]: {relative_path}")
         
         if issues['padding_found']:
-            logger.warning("  * Padding Found (Run 'unpad' or 'clean' to fix):")
+            logger.warning("  * Padding Found (Run 'tab-utils process' with either --unpad-only or --unpat-strip to fix):")
             for sheet, detail in issues['details'].items():
                 if detail['padding'][0] > 0 or detail['padding'][1] > 0:
                     logger.warning(f"    - Sheet '{sheet}': {detail['padding'][0]} row(s), {detail['padding'][1]} col(s)")
                     
         if issues['strip_issues']:
-            logger.warning("  * Unstripped Text Found (Run 'strip-text' or 'clean' to fix):")
+            logger.warning("  * Unstripped Text Found (Run 'tab-utils process' with either --strip-only or --unpat-strip' to fix):")
             for sheet, detail in issues['details'].items():
                 if detail['strip_cells']:
                     # Only show the first few cells to keep the output clean
                     coords = detail['strip_cells'][:5]
                     more = f"... (+{len(detail['strip_cells']) - 5} more)" if len(detail['strip_cells']) > 5 else ""
-                    logger.warning(f"    - Sheet '{sheet}': e.g., {', '.join(coords)}{more}")
+                    logger.warning(f"    - Sheet '{sheet}': e.g., {str(coords)[1:-1]}{more}")
     return issues
 
-def check_recursively(folder_path: str, check_padding: bool, check_strip: bool):
+def check_recursively(folder_path: str, check_padding: bool, check_strip: bool,
+                      frmt_to_check: Optional[Union[List, str]] = None):
     """
-    Recursively checks all Excel files in a folder for issues and prints a report.
+    Recursively checks all tabular files in a folder for issues and prints a report.
     """
     if not os.path.isdir(folder_path):
         logger.error(f"Folder not found: {folder_path}")
         return
-
+    
+    if frmt_to_check:
+        if isinstance(frmt_to_check, str):
+            frmt_to_check = [helpers.harmonize_ext(frmt_to_check)]
+        elif helpers.islistlike(frmt_to_check):
+            frmt_to_check = [helpers.harmonize_ext(i) for i in frmt_to_check]
+    else:
+        frmt_to_check = TABULAR_EXTENSIONS
     logger.info(f"--- Starting Recursive Check in: {os.path.basename(folder_path)} ---")
     
     found_issues = False
@@ -600,7 +640,7 @@ def check_recursively(folder_path: str, check_padding: bool, check_strip: bool):
     for fol, _, files in os.walk(folder_path):
         for file in files:
             ext = os.path.splitext(file.lower())[1][1:]
-            if ext in TABULAR_EXTENSIONS:
+            if ext in frmt_to_check:
                 full_path = os.path.join(fol, file)
                 issues_in_file = check_file(full_path, ext, check_padding, check_strip, folder_path=folder_path)
                 if issues_in_file:
@@ -690,11 +730,18 @@ def check_multitable_file(fname, ext):
         for sheet_name, df in dfs.items():
             check_multitable_df(df, fname, sheet=sheet_name)
             
-def check_multitable_recursively(folder):
+def check_multitable_recursively(folder, frmt_to_check=None):
+    if frmt_to_check:
+        if isinstance(frmt_to_check, str):
+            frmt_to_check = [helpers.harmonize_ext(frmt_to_check)]
+        elif helpers.islistlike(frmt_to_check):
+            frmt_to_check = [helpers.harmonize_ext(i) for i in frmt_to_check]
+    else:
+        frmt_to_check = TABULAR_EXTENSIONS
     for folder, subfolders, files in os.walk(folder):
         for file in files:
             ext = os.path.splitext(file.lower())[1][1:]
-            if ext in TABULAR_EXTENSIONS:
+            if ext in frmt_to_check:
                 fname = os.path.join(folder, file)
                 check_multitable_file(fname, ext)
 
@@ -711,7 +758,13 @@ def _get_excel_writer_engine(out_format: str) -> str:
     if out_format == 'xlsx':
         return 'xlsxwriter'
     elif out_format == 'xls':
-        # Requires the 'xlwt' library
+        if int(pd.__version__.split(".")[0]) >= 2:
+            logger.critical("Writing to xls files is deprecated. You can still do it but you will need to revert to pandas <= 1.5 and install xlwt")
+            raise DependencyRelatedError("Pandas is version 2 or more => no xls writing")
+        else:
+            if importlib.util.find_spec("xlwt") is None:
+                logger.critical("Writing to xls files is deprecated. You can still do it but you will need to install xlwt (pip install xlwt)")
+                raise DependencyRelatedError("Missing xlwt to write to xls")
         return 'xlwt'
     else:
         raise InvalidFileFormatError(f"Unsupported Excel format for writing: {out_format}")
@@ -970,7 +1023,20 @@ def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destfol=
     out_format = in_format if out_format is None else out_format
     write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "hsplit", "split tables horizontally")
 
-def convert_file(file, out_format=None, destfol=None, destfbname=None, inplace=False, sep=None):
+def read_sep_tab(file, sep):
+    with open(file, "r") as f:
+        lines = f.readlines()
+    for n, line in enumerate(lines):
+        if sep in line:
+            first = n
+            break
+    headerlines, datalines = lines[:first], lines[first:]
+    df = pd.read_csv(io.StringIO("\n".join(datalines)), sep=sep, header=None)
+    header = "\n".join([f"#{i}" for i in headerlines])
+    return df, header
+    
+def convert_file(file, out_format=None, destfol=None, destfbname=None, 
+                 inplace=False, sep=None, keep_nontabular=True):
     if out_format is None:
         raise ValueError("You must select an output format")
     if destfol:
@@ -980,18 +1046,39 @@ def convert_file(file, out_format=None, destfol=None, destfbname=None, inplace=F
     basename = destfbname if destfbname else fname[:-(len(ext)+1)]
     if destfol is None:
         destfol = folder_path
+    has_comment_lines = False
     if ext in WIDE_SEP_EXTENSIONS:
         if sep is None:
             sep = EXT_TO_SEP[ext]
-        dfs = {basename: pd.read_csv(file, sep=sep, header=None)}
+        try:
+            dfs = {basename: pd.read_csv(file, sep=sep, header=None)}
+        except:
+            try:
+                df, non_tab_header = read_sep_tab(file, sep=sep)
+                has_comment_lines = True
+                dfs = {basename: df}
+            except:
+                raise FileNotUnderstoodError(f"Could not understand the data in file: {file}")
     elif ext in PROCESS_EXTENSIONS:
         dfs = pd.read_excel(file, sheet_name=None, header=None)
     out_folder = folder_path if inplace else destfol
     if out_format in STRICT_SEP_EXTENSIONS:
-        for sheet_name, df in dfs.items():
-            addendum = "" if len(dfs) == 1 else f"_{sheet_name}"
-            df.to_csv(os.path.join(out_folder, f"{basename}{addendum}.{out_format}"), header=False, index=False, sep=EXT_TO_SEP[out_format])
+        if has_comment_lines and keep_nontabular:
+            logger.critical(""""Writing non-tabular data as comments marked with '#'.
+                            Make sure to indicate that in your Readme file (e.g. {out_format} files contain comments marked with '#', to read use pd.read_csv(file, comment='#')""")
+            outfile = os.path.join(out_folder, f"{basename}.{out_format}")
+            with open(outfile, "w", encoding="utf-8") as f:
+                f.write(non_tab_header)
+            df.to_csv(outfile, mode="a",  header=False, index=False, sep=EXT_TO_SEP[out_format])
+        else:
+            if has_comment_lines:
+                logger.critical("There is non-tabular data in this file. Beware that it will not be written to the output file, as per your request")
+            for sheet_name, df in dfs.items():
+                addendum = "" if len(dfs) == 1 else f"_{sheet_name}"
+                df.to_csv(os.path.join(out_folder, f"{basename}{addendum}.{out_format}"), header=False, index=False, sep=EXT_TO_SEP[out_format])
     elif out_format in PROCESS_EXTENSIONS:
+        if has_comment_lines and keep_nontabular:
+            raise OptionNotAllowed("Non tabular data in Excel files is not allowed! Nontabular data in csv/tsv is deprecated but tolerated")
         for sheet_name, df in dfs.items():
             engine = _get_excel_writer_engine(out_format)
             addendum = "" if len(dfs) == 1 else f"_{sheet_name}"
@@ -1091,28 +1178,26 @@ def get_tables_df(df):
         tables[key] = table
     return tables
 
-def split_tables_file(file, in_format=None, out_format=None, inplace=False, destination=None):
+def split_tables_file(file, in_format=None, out_format=None, inplace=False,
+                      destfol=None, destfbname=None):
     try:
         sheets, in_format = read_sheets(file, frmt=in_format)
     except InvalidFileFormatError as e:
         logger.error(f"Skipping split for {file}: {e}")
         return
-    if destination:
-        destination = helpers.check_and_clean_folderpath(destination)
     
     tables_per_sheet = {}
     for sheet_name, data in sheets.items():
         df = data["df"]
         tables_per_sheet[sheet_name] = get_tables_df(df)
     if all([len(v) == 1 for k, v in tables_per_sheet.items()]):
-        if destination:
-            fname =os.path.split(file)[1]
-            sh.copy2(file, os.path.join(destination, fname))
+        if destfol:
+            sh.copy2(file, destfol)
     out_format = in_format if out_format is None else out_format
-    write_tables(tables_per_sheet, file, out_format, destination, inplace, "splitall", "split all tables")
+    write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "splitall", "split all tables")
     
 def process_recursively(path: str, file_func: Callable[..., None], destination=None,
-                        out_format=None, inplace=False, format_to_process=None,
+                        out_format=None, inplace=False, formats_to_process=None,
                         **kwargs) -> None:
     """
     Recursively processes all supported tabular files (.xlsx, .xls, .csv) 
@@ -1124,7 +1209,15 @@ def process_recursively(path: str, file_func: Callable[..., None], destination=N
         **kwargs: Additional keyword arguments passed to file_func.
     """
     path = os.path.abspath(path)
-
+    
+    if formats_to_process:
+        if isinstance(formats_to_process, str):
+            formats_to_process = [helpers.harmonize_ext(formats_to_process)]
+        elif helpers.islistlike(formats_to_process):
+            formats_to_process = [helpers.harmonize_ext(i) for i in formats_to_process]
+    else:
+        formats_to_process = TABULAR_EXTENSIONS
+        
     if os.path.isdir(path):
         if destination:
             destination = helpers.check_and_clean_folderpath()
@@ -1137,12 +1230,11 @@ def process_recursively(path: str, file_func: Callable[..., None], destination=N
             for file in files:
                 file_path: str = os.path.join(fol, file)
                 ext = os.path.splitext(file)[1][1:]
-                to_process = ext == format_to_process if format_to_process else file.lower().endswith(TABULAR_EXTENSIONS)
-                if to_process:
+                if ext in formats_to_process:
                     logger.info(f"Processing file: {file_path}")
                     try:
                         dest_path = None if destination is None else correspfol
-                        file_func(file_path, destination=dest_path,
+                        file_func(file_path, destfol=dest_path,
                                   out_format=out_format, inplace=inplace,
                                   **kwargs)
                     except Exception as e:
@@ -1184,6 +1276,7 @@ def check_command(args):
         raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
         ext = os.path.splitext(args.source.lower())[1][1:]
+    frmt_to_check = args.in_formats.split(",") if args.in_formats else None
     # Logic for the mutually exclusive options
     if any([args.strip_only, args.unpad_only, args.strip_unpad]):
         check_padding = False if args.strip_only else True
@@ -1191,12 +1284,13 @@ def check_command(args):
         if os.path.isfile(args.source):
             check_file(args.source, ext, check_padding, check_strip)
         elif os.path.isdir(args.source):
-            check_recursively(args.source, check_padding, check_strip)
+            check_recursively(args.source, check_padding, check_strip,
+                              frmt_to_check=frmt_to_check)
     elif args.multi_table:
         if os.path.isfile(args.source):
             check_multitable_file(args.source, ext)
         elif os.path.isdir(args.source):
-            check_multitable_recursively(args.source)
+            check_multitable_recursively(args.source, frmt_to_check=frmt_to_check)
 
 def process_command(args):
     """
@@ -1204,9 +1298,10 @@ def process_command(args):
     Placeholder for your actual checking code.
     """
     if not os.path.exists(args.source):
-        FileNotFoundError(f"Your source {args.source} does not exist!!")
+        raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
         ext = os.path.splitext(args.source.lower())[1][1:]
+    in_formats = args.in_formats.split(",") if args.in_formats else None
     # Logic for the mutually exclusive options
     if any([args.strip_only, args.unpad_only, args.strip_unpad]):
         if args.out_format:
@@ -1217,10 +1312,9 @@ def process_command(args):
         if os.path.isfile(args.source):
             unpad_strip_file(args.source, dest, ext, unpad, strip_text)
         elif os.path.isdir(args.source):
-            unpad_strip_recursively(args.source, dest, unpad, strip_text)
+            unpad_strip_recursively(args.source, dest, unpad, strip_text, in_formats=in_formats)
     else:
         out_format = helpers.harmonize_ext(args.out_format)
-        in_format = helpers.harmonize_ext(args.in_format)
         if args.vsplit_tables:
             split_func = vsplit_tables
         elif args.vsplit_into_two_columns_tables:
@@ -1230,37 +1324,40 @@ def process_command(args):
         elif args.split_all_tables:
             split_func = split_tables_file
         if os.path.isfile(args.source):
-            if args.in_format:
+            if args.in_formats:
                 logger.info("You passed a --in-format argument but this will be ignored since your source is a file. The extension will be detected from the filename.")
             split_func(args.source, in_format=ext, out_format=out_format, inplace=args.inplace, destination=args.destination)
         elif os.path.isdir(args.source):
             process_recursively(args.source, split_func, out_format=out_format,
-                                format_to_process=in_format, destination=args.destination, inplace=args.inplace)
+                                formats_to_process=in_formats, destination=args.destination, inplace=args.inplace)
 
 def convert_command(args):
+    logger.debug(f"keep_nontabular: {args.keep_nontabular}")
     if not os.path.exists(args.source):
-        # raise FileNotFoundError(f"Your source {args.source} does not exist!!")
         logger.critical(f"Your source {args.source} does not exist!!")
+        raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     sep = args.sep
     if sep:
         sep = args.sep.encode().decode("unicode_escape")
     if os.path.isfile(args.source):
         try:
             if helpers.isdir(args.destination):
-                convert_file(args.source, out_format=args.out_format, destfol=args.destination, inplace=args.inplace, sep=sep)
+                convert_file(args.source, out_format=args.out_format, destfol=args.destination,
+                             inplace=args.inplace, sep=sep, keep_nontabular=args.keep_nontabular)
             elif helpers.isfile(args.destination):
                 destfol, destfname = os.path.split(args.destination)
                 destfbname, _ = os.path.splitext(destfname)
                 ext = _[1:]
                 assert ext == args.out_format, "The destination is a filepath that does not match the desired output format!!"
                 convert_file(args.source, out_format=args.out_format, destfol=destfol,
-                             destfbname=destfbname, inplace=args.inplace, sep=sep)
+                             destfbname=destfbname, inplace=args.inplace, sep=sep,
+                             keep_nontabular=args.keep_nontabular)
             logger.info(f"Successfully converted {args.source}")
         except Exception as e:
             logger.critical(f"Error encountered while processing {args.source}:\n {e}")
     elif os.path.isdir(args.source):
         process_recursively(args.source, convert_file, destfol=args.destination, inplace=args.inplace,
-                            out_format=args.out_format, format_to_process=args.in_format, sep=sep)
+                            out_format=args.out_format, format_to_process=args.in_formats, sep=sep)
 
 def cli():
     """Configures and runs the command line interface."""
@@ -1308,10 +1405,10 @@ def cli():
     )
     
     parser_process.add_argument(
-        '--in-format',
+        '--in-formats',
         type=str,
-        dest='in_format',
-        help='The extensions to process if the source is a folder. If empty, it will process {TABULAR_EXTENSIONS}.'
+        dest='in_formats',
+        help=f'The extension(s) to process if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
     )
 
     # 2. Mutually Exclusive Group for output location (Required for PROCESS)
@@ -1342,12 +1439,18 @@ def cli():
         help='The source file or directory to check.'
     )
     
+    parser_check.add_argument(
+        '--in-formats', '--in-format',
+        type=str,
+        dest='in_formats',
+        help=f'The extension(s) to check if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
+    )
     
     # Mutually Exclusive Group for 'process' options
     process_group = parser_process.add_mutually_exclusive_group(required=True)
     process_group.add_argument('--strip-only', '--strip', action='store_true', help='Only strip whitespace from cell contents.')
     process_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Only unpad data to remove column spacing.')
-    process_group.add_argument('--strip-unpad', action='store_true', help='Strip whitespace AND unpad data.')
+    process_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Strip whitespace AND unpad data.')
     process_group.add_argument('--vsplit-tables', '--vsplit', action='store_true', help='Split vertical multitables.')
     process_group.add_argument('--vsplit-into-two-columns-tables', '--vsplit2col', action='store_true', help='Vertically split into two columns tables.')
     process_group.add_argument('--hsplit-tables', '--hsplit', action='store_true', help='Split horizontal multitables')
@@ -1357,7 +1460,7 @@ def cli():
     check_group = parser_check.add_mutually_exclusive_group(required=True)
     check_group.add_argument('--strip-only', '--strip', action='store_true', help='Check only for cells needing strip.')
     check_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Check only for padding issues.')
-    check_group.add_argument('--strip-unpad', action='store_true', help='Check for both strip and unpad issues.')
+    check_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Check for both strip and unpad issues.')
     check_group.add_argument('--multi-table', action='store_true', help='Check for multiple tables in a single file.')
 
     parser_convert = subparsers.add_parser(
@@ -1376,14 +1479,15 @@ def cli():
         '--out-format',
         type=str,
         dest='out_format',
+        required=True,
         help='The output format for the conversion You can use csv, tsv, xlsx, xls'
     )
     
     parser_convert.add_argument(
-        '--in-format',
+        '--in-formats', '--in-format',
         type=str,
-        dest='in_format',
-        help='The extension of files you want to process if working in a folder'
+        dest='in_formats',
+        help=f'The extension(s) to convert if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
     )
     
     parser_convert.add_argument(
@@ -1397,6 +1501,12 @@ def cli():
         "\s+" \N{RIGHTWARDS ARROW} one or more tab or spaces (careful, this could join cells if you have contiguous empty ones)
         '''
     )
+    
+    parser_convert.add_argument(
+        '--discard-non-tabular',
+        action="store_false",
+        dest="keep_nontabular",
+        help="It discards any non-tabular data at the beginning of charcter-separated tabular files")
 
     # 2. Mutually Exclusive Group for output location (Required for PROCESS)
     location_group_convert = parser_convert.add_mutually_exclusive_group(required=True)
