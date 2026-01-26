@@ -772,6 +772,7 @@ def _get_excel_writer_engine(out_format: str) -> str:
 
 def write_tables(tables_per_sheet, source_file, out_format, destfol, destfbname,
                  inplace, operation, operation_name):
+    destfol = helpers.check_and_clean_folderpath(destfol)
     basename = destfbname if destfbname else f"{os.path.splitext(os.path.split(source_file)[1])[0]}_{operation}"
     source_folder = os.path.split(source_file)[0]
     out_folder = destfol if destfol else source_folder
@@ -817,8 +818,8 @@ def write_tables(tables_per_sheet, source_file, out_format, destfol, destfbname,
         # Write each table to a separate CSV source_file
         for sheet_name, tables in tables_per_sheet.items():
             for k, table in tables.items():
-                safe_k = _safe_sheet_name(k)
-                out_file = os.path.join(out_folder, f"{basename}_{safe_k}.{out_format}")
+                safe_sheet_k = _safe_sheet_name(f"{sheet_name}_{k}")
+                out_file = os.path.join(out_folder, f"{basename}_{safe_sheet_k}.{out_format}")
                 table.to_csv(out_file, index=False, header=True, sep=EXT_TO_SEP[out_format])
         logger.info(f"Successfully {operation_name} from {source_file} into multiple {out_format.upper()}")
         if inplace:
@@ -833,6 +834,7 @@ def vsplit_tables(file, in_format=None, out_format=None, inplace=False,
     individual sheets (if XLSX/XLS) or separate CSV files.
     """
     try:
+        logger.debug(f"in_format {in_format}")
         sheets, in_format = read_sheets(file, frmt=in_format)
     except InvalidFileFormatError as e:
         logger.error(f"Skipping split for {file}: {e}")
@@ -881,6 +883,7 @@ def vsplit_tables(file, in_format=None, out_format=None, inplace=False,
         return
     
     out_format = in_format if out_format is None else helpers.harmonize_ext(out_format)
+    logger.debug(tables_per_sheet)
     write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "vsplit", "split tables vertically")
 
 def split_tables_to_multiindex(file, in_format=None, out_format=None, inplace=False,
@@ -1026,8 +1029,8 @@ def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destfol=
     for sheet_name, data in sheets.items():
         df, original_columns = data["df"], data["columns"]
         if sum(bool(x) for x in original_columns) == 1:  # header was actually table title
-            df.columns = df.iloc[0].fillna(value="").astype(str).tolist()
-            df.iloc[0] = original_columns
+            header_row = pd.DataFrame([[i if i else None for i in original_columns]], columns=df.columns)
+            df = pd.concat([header_row, df], ignore_index=True)
         start = 0
         tables: Dict[str, pd.DataFrame] = {}
         
@@ -1048,7 +1051,7 @@ def hsplit_tables(file, in_format=None, out_format=None, inplace=False, destfol=
                 table = df.iloc[start:end, :].copy()
                 table.columns = original_columns
                 row0, row1 = table.iloc[0], table.iloc[1]
-                if sum(bool(pd.notna(x)) for x in row0) == 1:  # only 1 notna => table title
+                if sum(pd.notna(x) for x in row0) == 1:  # only 1 notna => table title
                     idx = [n for n, x in enumerate(row0) if pd.notna(x)][0]
                     key = row0.iloc[idx]
                     table = table.iloc[1:]
@@ -1390,9 +1393,9 @@ def process_command(args):
                 elif helpers.isfile(args.destination):
                     destfol, destfname = os.path.split(args.destination)
                     destfbname, _ = os.path.splitext(destfname)
-                    ext = _[1:]
+                    ext_out = _[1:]
                     if args.out_format:
-                        assert ext == helpers.harmonize_ext(args.out_format), "The destination is a filepath that does not match the desired output format!!"
+                        assert ext_out == helpers.harmonize_ext(args.out_format), "The destination is a filepath that does not match the desired output format!!"
             else:
                 destfol, destfbname = None, None
             split_func(args.source, in_format=ext, out_format=out_format, inplace=args.inplace,
