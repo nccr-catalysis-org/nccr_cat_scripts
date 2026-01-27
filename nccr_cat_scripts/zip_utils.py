@@ -106,7 +106,7 @@ def is_single_root_folder(archive_fp, ext=None):
 
         # Check if there is exactly one top-level component (indicating a wrapped archive)
         if len(top_levels) == 1:
-            return True
+            return list(top_levels)[0]
         
         return False
     except Exception as e:
@@ -240,17 +240,22 @@ def extract_recursively_from_file(filepath, remove_archives=False):
     Handles the initial extraction of a single zip file, 
     then calls the recursive folder processing function.
     """
-    
-    # Use os.path.splitext to robustly get the base name for the extraction directory
-    extraction_dir = os.path.splitext(filepath)[0] 
-    if not os.path.exists(extraction_dir):
-        os.makedirs(extraction_dir)
-
-    logger.info(f"Initial extract: {os.path.basename(filepath)} to {os.path.basename(extraction_dir)}/")
-    
-    # Perform extraction member-by-member for safety and exclusion
     try:
         ext = getext(filepath)
+        # Use os.path.splitext to robustly get the base name for the extraction directory
+        if is_single_root_folder(filepath):
+             # Unwrap case: Extract contents directly into the current folder
+            extraction_dir = os.path.split(filepath)[0]
+            logger.info(f"-> Unwrapping {os.path.basename(filepath)} into {os.path.basename(extraction_dir)}/")
+        else:
+            # Container case: Extract into a new folder named after the zip file
+            extraction_dir = filepath[:-(len(ext) + 1)]
+            logger.info(f"-> Creating container and extracting {os.path.basename(filepath)} to {os.path.basename(extraction_dir)}/")
+
+        # Ensure the target directory exists (for the container case)
+        os.makedirs(extraction_dir, exist_ok=True)
+
+        logger.info(f"Initial extract: {os.path.basename(filepath)} to {os.path.basename(extraction_dir)}/")
         if ext == "zip":
             extract_zip(filepath, extraction_dir, remove_archives)
         elif ext == "rar":
@@ -286,7 +291,7 @@ def extract_recursively(path, remove_archives=False):
         extract_recursively_in_folder(path, remove_archives=remove_archives)
         
         
-def _make_naked(zip_fp: str, single_root_folder: str) -> bool:
+def _make_naked(archive_fp: str, single_root_folder: str) -> bool:
     """
     Rewrites a 'dressed' zip file (containing only a single folder)
     to a 'naked' zip file (containing the folder's contents).
@@ -296,35 +301,37 @@ def _make_naked(zip_fp: str, single_root_folder: str) -> bool:
     try:
         # Create a temporary directory for extraction and zipping
         # We ensure it's in the same directory as the zip_fp if possible
-        temp_dir = os.path.join(os.path.dirname(zip_fp) or '.', f"temp_naked_clean_{os.path.basename(zip_fp)}_data")
+        temp_dir = os.path.join(os.path.dirname(archive_fp) or '.', f"temp_naked_clean_{os.path.basename(archive_fp)}_data")
         os.makedirs(temp_dir, exist_ok=True)
 
-        # 1. Extract the content into a temporary root folder
-        temp_extract_root = os.path.join(temp_dir, 'temp_root_extract')
-        with zf.ZipFile(zip_fp, 'r') as zf_in:
-            zf_in.extractall(path=temp_extract_root)
-
-        # Path to the actual content folder that was extracted
-        source_content_path = os.path.join(temp_extract_root, single_root_folder.strip('/'))
+        ext = getext(archive_fp)
+            
+        if ext == "zip":
+            extract_zip(archive_fp, temp_dir, False, extracted=None)
+        elif ext == "rar":
+            extract_rar(archive_fp, temp_dir, False, extracted=None)
+        elif ext in ["tar.gz", "tgz", "tar"]:
+            extract_tar(archive_fp, temp_dir, False, extracted=None)
         
         # 2. Create the new (naked) zip file
         new_zip_fp = os.path.join(temp_dir, 'naked_temp.zip')
+        naked_content_path = os.path.join(temp_dir, single_root_folder)
         
         with zf.ZipFile(new_zip_fp, 'w', zf.ZIP_DEFLATED) as zf_out:
-            for root, _, files in os.walk(source_content_path):
+            for root, _, files in os.walk(naked_content_path):
                 for file in files:
                     full_path = os.path.join(root, file)
                     # Archive name: path relative to the content folder (flattens the structure)
-                    arcname = os.path.relpath(full_path, source_content_path)
+                    arcname = os.path.relpath(full_path, naked_content_path)
                     zf_out.write(full_path, arcname)
 
         # 3. Replace the original zip file
-        shutil.copyfile(new_zip_fp, zip_fp)
-        logger.info(f"CLEANED: Made '{os.path.basename(zip_fp)}' naked.")
+        shutil.copyfile(new_zip_fp, archive_fp)
+        logger.debug(f"CLEANED: Made '{os.path.basename(archive_fp)}' naked.")
         return True
 
     except Exception as e:
-        logger.error(f"Failed to make '{os.path.basename(zip_fp)}' naked: {e}")
+        logger.error(f"Failed to make '{os.path.basename(archive_fp)}' naked: {e}")
         return False
     finally:
         # Clean up temporary directories
@@ -373,13 +380,11 @@ def clean_zip_recursively(zip_fp: str):
     This process is done in-place by rewriting the zip file.
     """
     zip_filename = os.path.basename(zip_fp)
-    
     # 1. Check for Dressed structure and clean it first (in-place rewrite)
     try:
-        with zf.ZipFile(zip_fp, 'r') as zf_obj_check:
-            single_root = is_single_root_folder(zf_obj_check)
-            if single_root:
-                _make_naked(zip_fp, single_root)
+        single_root_folder = is_single_root_folder(zip_fp)
+        if single_root_folder:
+            _make_naked(zip_fp, single_root_folder)
     except zf.BadZipFile:
         logger.error(f"ERROR: Archive is corrupted and cannot be read: {zip_filename}")
         return
@@ -405,7 +410,7 @@ def clean_zip_recursively(zip_fp: str):
                     # Create a temporary file to hold the nested zip's stream for cleaning
                     temp_nested_file = None
                     try:
-                        temp_nested_file = os.path.join(tempfile.gettempdir(), f"nested_{os.path.basename(nested_zip_name)}_{os.getpid()}")
+                        temp_nested_file = os.path.join(tempfile.gettempdir(), f"nested_{os.getpid()}_{os.path.basename(nested_zip_name)}")
                         # Ensure we write the bytes of the nested zip to the temporary file
                         with open(temp_nested_file, 'wb') as tmp:
                             tmp.write(zf_in.read(member))
@@ -427,14 +432,14 @@ def clean_zip_recursively(zip_fp: str):
         temp_cleaned_zip = None
         try:
             # Create a temporary path for the rewritten archive
-            temp_cleaned_zip = os.path.join(tempfile.gettempdir(), f"final_clean_{zip_filename}_{os.getpid()}")
+            temp_cleaned_zip = os.path.join(tempfile.gettempdir(), f"final_clean_{os.getpid()}_{zip_filename}")
             
             # Perform the rewrite (skipping __MACOSX , .DS_Store, and Thumbs.db, replacing nested zips)
             _rewrite_zip_for_cleaning(zip_fp, temp_cleaned_zip, nested_zips_to_replace)
             
             # Replace the original zip file
             shutil.copyfile(temp_cleaned_zip, zip_fp)
-            logger.info(f"SUCCESS: Finished cleaning and rewriting {zip_filename}.")
+            logger.debug(f"SUCCESS: Finished cleaning and rewriting {zip_filename}.")
             
         except Exception as e:
             logger.error(f"Failed to finalize rewrite of '{zip_filename}': {e}")
@@ -480,7 +485,7 @@ def main_cleaner(filepath: str, output_filepath: Optional[str] = None, in_place:
     logger.warning("Cleaning of the zip file can take quite some time, please be patient and do not interrupt the script")
     
     # 1. Create a working copy of the source file in a temporary directory
-    work_fp = os.path.join(tempfile.gettempdir(), f"working_copy_{filename}_{os.getpid()}")
+    work_fp = os.path.join(tempfile.gettempdir(), f"working_copy_{os.getpid()}_{filename}")
     
     try:
         shutil.copyfile(filepath, work_fp)
@@ -660,7 +665,6 @@ def cli():
     
     if importlib.util.find_spec("argcomplete"):
         import argcomplete
-        logger.info("running argcomplete.autocomplete(parser)")
         argcomplete.autocomplete(parser)
     
     if len(sys.argv) == 1:
@@ -686,7 +690,6 @@ def handle_clean_command(args):
         # If both are specified, prioritize the explicit output path
         logger.info("You specified an output path but also '--in-place', the output path will be used.")
         in_place = False
-        
     main_cleaner(args.filepath, output_filepath=output_filepath, in_place=in_place)
 
 
