@@ -300,24 +300,36 @@ def unpad_strip_xlsx_file(filename: str, outname: str, unpad: bool, strip_text: 
 # Pandas worksheet handling for unpadding and text stripping
 ###############################################################################
 
-def get_padding_info_df(df: pd.DataFrame) -> pd.DataFrame:
+def get_padding_info_df(df: pd.DataFrame, amount: Optional[bool] = False) -> pd.DataFrame:
     """
     Returns padding info of a DataFrame
 
     Args
         df : the dataframe to unpad
+        amount: False returns the index of the first non empty row/column from each side, True returns the number of empty rows/columns
 
     Returns:
         the unpadded DataFrame
     
 
     """
-    x, y = 0, 0
-    while df.iloc[x].isna().all():
-        x += 1
-    while df.iloc[:, y].isna().all():
-        y += 1
-    return x, y
+    x1, y1 = 0, 0
+    x2, y2 = [dim - 1 for dim in df.shape]
+    count_x2, count_y2 = 0, 0
+    while df.iloc[x1].isna().all():
+        x1 += 1
+    while df.iloc[:, y1].isna().all():
+        y1 += 1
+    while df.iloc[x2].isna().all():
+        if amount:
+            count_x2 += 1
+        x2 -= 1
+    while df.iloc[:, y2].isna().all():
+        if amount:
+            count_y2 += 1
+        y2 -= 1
+    return (x1, count_x2, y1, count_y2) if amount else (x1, x2, y1, y2)
+
 
 def unpad_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -331,8 +343,8 @@ def unpad_df(df: pd.DataFrame) -> pd.DataFrame:
     
 
     """
-    x, y = get_padding_info_df(df)
-    return df.iloc[x:, y:]
+    x1, x2, y1, y2 = get_padding_info_df(df)
+    return df.iloc[x1:x2+1, y1:y2+1]
 
 def strip_text_df(df: pd.DataFrame) -> pd.DataFrame:
     t = df.copy()
@@ -472,10 +484,10 @@ def check_xls_file(filename: str, check_padding: bool, check_strip: bool) -> Opt
         
         # 1. Check Padding
         if check_padding:
-            rows_to_delete, cols_to_delete = get_padding_info_df(df)
-            if rows_to_delete > 0 or cols_to_delete > 0:
+            empty_rows_top, empty_rows_bottom, empty_cols_left, empty_cols_right  = get_padding_info_df(df, amount=True)
+            if any([empty_rows_top, empty_cols_left, empty_rows_bottom, empty_cols_right]):
                 issues['padding_found'] = True
-                sheet_issues['padding'] = (rows_to_delete, cols_to_delete)
+                sheet_issues['padding'] = (empty_rows_top, empty_rows_bottom, empty_cols_left, empty_cols_right)
         
         # 2. Check Text Stripping
         if check_strip:
@@ -558,7 +570,7 @@ def check_csv_file(filename: str, check_padding: bool, check_strip: bool, sep=",
         return None
         
     try:
-        df = pd.read_csv(filename, sep=sep)
+        df = pd.read_csv(filename, sep=sep, header=None)
     except Exception:
         logger.error(f"Could not load file {filename}. Skipping check.")
         return None
@@ -567,10 +579,11 @@ def check_csv_file(filename: str, check_padding: bool, check_strip: bool, sep=",
     
     # 1. Check Padding
     if check_padding:
-        rows_to_delete, cols_to_delete = get_padding_info_df(df)
-        if rows_to_delete > 0 or cols_to_delete > 0:
+        empty_rows_top, empty_rows_bottom, empty_cols_left, empty_cols_right  = get_padding_info_df(df, amount=True)
+        if any([empty_rows_top, empty_cols_left, empty_rows_bottom, empty_cols_right]):
             issues['padding_found'] = True
-            issues["details"]["only_sheet"]['padding'] = (rows_to_delete, cols_to_delete)
+            issues["details"]["only_sheet"]['padding'] = (empty_rows_top, empty_rows_bottom, empty_cols_left, empty_cols_right)
+            logger.debug(f"{(empty_rows_top, empty_rows_bottom, empty_cols_left, empty_cols_right)}")
     
     # 2. Check Text Stripping
     if check_strip:
@@ -605,8 +618,14 @@ def check_file(full_path, ext, check_padding, check_strip, folder_path=None):
         if issues['padding_found']:
             logger.warning("  * Padding Found (Run 'tab-utils process' with either --unpad-only or --unpat-strip to fix):")
             for sheet, detail in issues['details'].items():
-                if detail['padding'][0] > 0 or detail['padding'][1] > 0:
-                    logger.warning(f"    - Sheet '{sheet}': {detail['padding'][0]} row(s), {detail['padding'][1]} col(s)")
+                if any(detail['padding']):
+                    bits = []
+                    logger.debug(detail['padding'])
+                    for x, name in zip(detail['padding'], ["row(s) at the top", "row(s) at the bottom", "column(s) on the left", "column(s) on the right"]):
+                        if x:
+                            bits.append(f"{x} {name}")
+                    message = f"    - Sheet '{sheet}': {', '.join(bits)}"
+                    logger.warning(message)
                     
         if issues['strip_issues']:
             logger.warning("  * Unstripped Text Found (Run 'tab-utils process' with either --strip-only or --unpat-strip' to fix):")
