@@ -27,6 +27,7 @@ dependencies = [
     "pandas",
     "openpyxl",
     "rarfile",
+    "xlsxwriter"
 ]
 
 [project.optional-dependencies]

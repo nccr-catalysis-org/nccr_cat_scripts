@@ -25,16 +25,48 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, get_column_letter
 from nccr_cat_scripts import helpers
 
+
 # --- Logger Setup ---
+class CustomLogger(logging.Logger):
+    def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, no_prefix=False, **kwargs):
+        # Intercept the 'no_prefix' argument and move it into 'extra'
+        if no_prefix:
+            extra = extra or {}
+            extra['no_prefix'] = True
+        super()._log(level, msg, args, exc_info, extra, stack_info, **kwargs)
+
+class DynamicFormatter(logging.Formatter):
+    def format(self, record):
+        # Store original format to restore it later
+        orig_format = self._style._fmt
+        
+        if getattr(record, 'no_prefix', False):
+            # Change format to just the message
+            self._style._fmt = "%(message)s"
+        
+        result = super().format(record)
+        
+        # Restore original format for the next log
+        self._style._fmt = orig_format
+        return result
+
+# 1. Register our custom logger class
+logging.setLoggerClass(CustomLogger)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.INFO)
+
+# 2. Setup Handler and the Dynamic Formatter
 handler = logging.StreamHandler()
-formatter = logging.Formatter('%(levelname)s:%(message)s')
+# Use the normal format as default
+formatter = DynamicFormatter('%(levelname)s:%(message)s')
 handler.setFormatter(formatter)
+
+# Clean up existing handlers (from your original snippet)
 if logger.handlers:
     for h in logger.handlers:
         logger.removeHandler(h)
 logger.addHandler(handler)
+
 # --- End Logger Setup ---
 
 # Regex to find cell references in formulas (e.g., A1, B2, or Sheet1!A1)
@@ -811,6 +843,9 @@ def write_sheets(dfs, destfol, destfbname="", frmt=None):
             with pd.ExcelWriter(fpath, engine=engine) as writer:
                 for sheet_name, df in dfs.items():
                     new_sheet_name = _safe_sheet_name(sheet_name)
+                    if hasattr(df.style, "map_index"):
+                        df = df.style.map_index(lambda v: "font-weight: bold; border: 1pt solid black", axis=0)
+                        df = df.map_index(lambda v: "font-weight: bold; border: 1pt solid black", axis=1)
                     df.to_excel(writer, sheet_name=new_sheet_name, header=True)
             logger.info(f"Successfully written sheets in {fpath}")
         except Exception as e:
@@ -861,6 +896,9 @@ def write_tables(tables_per_sheet, source_file, out_format, destfol, destfbname,
                 for sheet_name, tables in tables_per_sheet.items():
                     for k, table in tables.items():
                         new_sheet_name = _safe_sheet_name(f"{sheet_name}_{k}")
+                        if hasattr(table.style, "map_index"):
+                            table = table.style.map_index(lambda v: "font-weight: bold; border: 1pt solid black", axis=0)
+                            table = table.map_index(lambda v: "font-weight: bold; border: 1pt solid black", axis=1)
                         table.to_excel(writer, sheet_name=new_sheet_name, index=False, header=True)
             logger.info(f"Successfully {operation_name} from {source_file} to {out_format} sheets in {out_file}")
         except Exception as e:
@@ -1165,7 +1203,7 @@ def read_multi_index_csv(file, header=[0, 1], index_col=0, sep=","):
     return df
 
 
-def smart_read_multiindex(file_path, in_format=None):
+def detect_and_read_multiindex(file_path, in_format=None):
     def try_numeric(series):
         """Replacement for deprecated errors='ignore'."""
         try:
@@ -1241,14 +1279,31 @@ def smart_read_multiindex(file_path, in_format=None):
 
         # Final cleanup: ensure the data area is numeric
         processed_results[name] = data_block.apply(try_numeric)
-        logger.info(f"{file_path}, sheet: {name}, header: {list(range(r))}, index_col: {list(range(c))}")
+        if frmt in PROCESS_EXTENSIONS:
+            logger.info(f"pd.read_excel('{file_path}',sheet_name='{name}', header={list(range(r))}, index_col={list(range(c))})",
+                        no_prefix=True)
+        if frmt  in  STRICT_SEP_EXTENSIONS:
+            sep = "," if frmt == "csv" else "\t"
+            logger.info(f"pd.read_csv('{file_path}', sep='{sep}', header={list(range(r))}, index_col={list(range(c))})",
+                        no_prefix=True)
 
     return processed_results, frmt
+
+def recursive_read_multiindex(path, in_formats=None):
+    if in_formats is None:
+        in_formats = TABULAR_EXTENSIONS
+    for folder, subfolder, files in os.walk(path):
+        for file in files:
+            ext = os.path.splitext(file)[1][1:]
+            if ext in in_formats:
+                fpath = os.path.join(folder, file)
+                detect_and_read_multiindex(fpath, in_format=ext)
+            
 
 def fix_missing_cells_multiindex(file_path, in_format=None, out_format=None, destfol=None, destfbname=None, inplace=False):
     if inplace and any(destfol, destfbname):
         raise ValueError("Contraddictory information: inplace or with destination?")
-    dfs, frmt = smart_read_multiindex(file_path, in_format=in_format)
+    dfs, frmt = detect_and_read_multiindex(file_path, in_format=in_format)
     write_sheets(dfs, destfol if destfol else os.path.split(file_path)[0],
                  frmt=out_format if out_format else frmt, destfbname=destfbname if destfbname else "")
 
@@ -1536,7 +1591,13 @@ def check_command(args):
             check_multitable_file(args.source, ext)
         elif os.path.isdir(args.source):
             check_multitable_recursively(args.source, frmt_to_check=frmt_to_check)
-
+    elif args.multiindex:
+        logger.info("One liners to read the sheets here below:")
+        if os.path.isfile(args.source):
+            detect_and_read_multiindex(args.source)
+        if os.path.isdir(args.source):
+            recursive_read_multiindex(args.source, in_formats=frmt_to_check)
+            
 def process_command(args):
     """
     Function to handle the 'check' command logic.
@@ -1572,6 +1633,7 @@ def process_command(args):
             split_func = split_tables_to_multiindex
         elif args.multiindex_fix_missing_cells:
             split_func = fix_missing_cells_multiindex
+            logger.info("One liners to read the sheets here below:")
         if os.path.isfile(args.source):
             if args.in_formats:
                 logger.info("You passed a --in-format argument but this will be ignored since your source is a file. The extension will be detected from the filename.")
@@ -1730,6 +1792,7 @@ def cli():
     check_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Check only for padding issues.')
     check_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Check for both strip and unpad issues.')
     check_group.add_argument('--multi-table', action='store_true', help='Check for multiple tables in a single file.')
+    check_group.add_argument('--multiindex', action='store_true', help='Tries to detect levels of index and prints to screen how to read the files')
 
     parser_convert = subparsers.add_parser(
         'convert', 
