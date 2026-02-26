@@ -1279,12 +1279,14 @@ def detect_and_read_multiindex(file_path, in_format=None):
 
         # Final cleanup: ensure the data area is numeric
         processed_results[name] = data_block.apply(try_numeric)
+        header_read_str = f"{list(range(r))}" if r > 1 else "0" if r else "None"
+        index_read_str = f"{list(range(c))}" if c > 1 else "0" if c else "None"
         if frmt in PROCESS_EXTENSIONS:
-            logger.info(f"pd.read_excel('{file_path}',sheet_name='{name}', header={list(range(r))}, index_col={list(range(c))})",
+            logger.info(f"pd.read_excel('{file_path}',sheet_name='{name}', header={header_read_str}, index_col={index_read_str})",
                         no_prefix=True)
         if frmt  in  STRICT_SEP_EXTENSIONS:
             sep = "," if frmt == "csv" else "\t"
-            logger.info(f"pd.read_csv('{file_path}', sep='{sep}', header={list(range(r))}, index_col={list(range(c))})",
+            logger.info(f"pd.read_csv('{file_path}', sep='{sep}', header={header_read_str}, index_col={index_read_str})",
                         no_prefix=True)
 
     return processed_results, frmt
@@ -1591,7 +1593,7 @@ def check_command(args):
             check_multitable_file(args.source, ext)
         elif os.path.isdir(args.source):
             check_multitable_recursively(args.source, frmt_to_check=frmt_to_check)
-    elif args.multiindex:
+    elif args.reading_info:
         logger.info("One liners to read the sheets here below:")
         if os.path.isfile(args.source):
             detect_and_read_multiindex(args.source)
@@ -1792,7 +1794,7 @@ def cli():
     check_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Check only for padding issues.')
     check_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Check for both strip and unpad issues.')
     check_group.add_argument('--multi-table', action='store_true', help='Check for multiple tables in a single file.')
-    check_group.add_argument('--multiindex', action='store_true', help='Tries to detect levels of index and prints to screen how to read the files')
+    check_group.add_argument('--reading-info', '--multiindex', action='store_true', help='Tries to detect levels of index and prints to screen how to read the files')
 
     parser_convert = subparsers.add_parser(
         'convert', 
