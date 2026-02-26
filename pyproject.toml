@@ -24,9 +24,10 @@ classifiers = [
 ]
 dependencies = [
     "numpy",
-    "pandas",
+    "pandas @ git+https://github.com/NicoRicardi/pandas.git@main", # Personal fork with fix to pandas.DataFrame.to_excel with multiIndex and no index names, until it gets merged in pandas
     "openpyxl",
     "rarfile",
+    "xlsxwriter"
 ]
 
 [project.optional-dependencies]
