@@ -98,6 +98,16 @@ class OptionNotAllowed(Exception):
 # Openpyxel worksheet handling for unpadding and text stripping
 ###############################################################################
 
+def get_col_stats(series):
+    """Helper to identify cell types in a row or column."""
+    # numeric: actual numbers
+    is_num = pd.to_numeric(series, errors='coerce').notnull()
+    # empty: NaN, empty strings, or the 'Unnamed' string Pandas gives to merged cells
+    is_emp = series.isna() | series.astype(str).str.contains('^Unnamed|^nan$|^\s*$', na=False)
+    # label: The "neither numeric nor empty" cells you requested
+    is_lab = ~(is_num | is_emp)
+    return is_num, is_lab
+
 def get_padding_info_ws(worksheet) -> Tuple[int, int]:
     """
     Returns the number of rows and columns to unpad from a sheet.
@@ -729,8 +739,14 @@ def read_sheets(file, frmt=None, naked=False):
             try:
                 # Set header=None and read only the first row
                 columns_df = pd.read_csv(file, nrows=1, header=None, sep=sep)
+                columns = columns_df.iloc[0].fillna(value="").astype(str).tolist()
                 # Extract the original column names (potentially non-unique)
-                sheets[fname]["columns"] = columns_df.iloc[0].fillna(value="").astype(str).tolist()
+                sheets[fname]["columns"] = columns
+                is_num, is_lab = get_col_stats(df.iloc[:, 0])
+                if is_lab.mean() > 0.8:
+                    df = df.set_index(df.columns[0])
+                    df.index.name = columns[0]
+                    sheets[fname]["df"] = df
             except Exception as e:
                 logger.warning(f"Could not read first row for original column names in {file}: {e}")
                 sheets[fname]["columns"] = sheets[fname]["df"].columns.astype(str).tolist() # Fallback to pandas detected headers
@@ -738,11 +754,18 @@ def read_sheets(file, frmt=None, naked=False):
         sheets = {k: v if naked else {"df": v} for k, v in pd.read_excel(file, sheet_name=None, header=None if naked else 0).items()}
         if not naked:
             for sheet_name, dict_ in sheets.items():
+                df = dict_["df"]
                 try:
                     # Set header=None and read only the first row
                     columns_df = pd.read_excel(file, nrows=1, header=None, sheet_name=sheet_name)
+                    columns = columns_df.iloc[0].fillna(value="").astype(str).tolist()
                     # Extract the original column names (potentially non-unique)
-                    sheets[sheet_name]["columns"] = columns_df.iloc[0].fillna(value="").astype(str).tolist()
+                    sheets[sheet_name]["columns"] = columns
+                    is_num, is_lab = get_col_stats(df.iloc[:, 0])
+                    if is_lab.mean() > 0.8:
+                        df = df.set_index(df.columns[0])
+                        df.index.name = columns[0]
+                        sheets[sheet_name]["df"] = df
                 except Exception as e:
                     logger.warning(f"Could not read first row for original column names in {file}: {e}")
                     sheets[sheet_name]["columns"] = sheets[sheet_name]["df"].columns.astype(str).tolist() # Fallback to pandas detected headers
@@ -825,6 +848,7 @@ def _get_excel_writer_engine(out_format: str) -> str:
         raise InvalidFileFormatError(f"Unsupported Excel format for writing: {out_format}")
 
 def write_sheets(dfs, destfol, destfbname="", frmt=None):
+    destfol = destfol if destfol else ""
     if frmt is None:
         logger.critical("You must specify and output format between: csv, tsv, xlsx, xls (deprecated) and pass it as 'frmt=[desired_format]'")
         raise ValueError("You must specify and output format between: csv, tsv, xlsx, xls (deprecated) and pass it as 'frmt=[desired_format]'")
@@ -1217,22 +1241,12 @@ def detect_and_read_multiindex(file_path, in_format=None):
     for name, df in dfs.items():
         # 1. Standardize empty/whitespace/Pandas-placeholders to NaN
         df = df.replace(r'^\s*$', np.nan, regex=True)
-        
-        def get_stats(series):
-            """Helper to identify cell types in a row or column."""
-            # numeric: actual numbers
-            is_num = pd.to_numeric(series, errors='coerce').notnull()
-            # empty: NaN, empty strings, or the 'Unnamed' string Pandas gives to merged cells
-            is_emp = series.isna() | series.astype(str).str.contains('^Unnamed|^nan$|^\s*$', na=False)
-            # label: The "neither numeric nor empty" cells you requested
-            is_lab = ~(is_num | is_emp)
-            return is_num, is_lab
 
         # 2. DETECT INDEX COLUMNS (Look Vertically)
         # c = first column that is NOT an index (contains actual numeric data)
         c = 0
         for col_idx in range(min(df.shape[1], 10)):
-            is_num, is_lab = get_stats(df.iloc[:, col_idx])
+            is_num, is_lab = get_col_stats(df.iloc[:, col_idx])
             # If a column contains a significant amount of numbers, it's a data column
             if is_num.mean() > 0.1: 
                 c = col_idx
@@ -1243,7 +1257,7 @@ def detect_and_read_multiindex(file_path, in_format=None):
         r = 0
         for row_idx in range(min(df.shape[0], 20)):
             # Only look at the data columns (c onwards) to avoid index labels
-            is_num, is_lab = get_stats(df.iloc[row_idx, c:])
+            is_num, is_lab = get_col_stats(df.iloc[row_idx, c:])
             
             # A data row is defined by having NO labels and containing some numbers or being empty
             # A header row is defined by having "neither numeric nor empty" cells (labels)
@@ -1303,11 +1317,16 @@ def recursive_read_multiindex(path, in_formats=None):
             
 
 def fix_missing_cells_multiindex(file_path, in_format=None, out_format=None, destfol=None, destfbname=None, inplace=False):
-    if inplace and any(destfol, destfbname):
+    if inplace and any([destfol, destfbname]):
         raise ValueError("Contraddictory information: inplace or with destination?")
     dfs, frmt = detect_and_read_multiindex(file_path, in_format=in_format)
+    if inplace:
+        destfol, fname = helpers.split(file_path)
+        destfbname, _ = os.path.splitext(fname)
     write_sheets(dfs, destfol if destfol else os.path.split(file_path)[0],
                  frmt=out_format if out_format else frmt, destfbname=destfbname if destfbname else "")
+    if inplace and out_format and frmt != out_format:
+        os.remove(file_path)
 
 def read_sep_tab(file, sep):
     with open(file, "r") as f:
@@ -1495,6 +1514,28 @@ def split_tables_file(file, in_format=None, out_format=None, inplace=False,
             sh.copy2(file, destfol)
     out_format = in_format if out_format is None else helpers.harmonize_ext(out_format)
     write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "splitall", "split all tables")
+
+def df_split_axes_to_multiindex(df, sep="_"):
+    for axis in ["index", "columns"]:
+        target_axis = getattr(df, axis)
+        new_index = target_axis.str.split(sep, expand=True)
+        df = df.set_axis(new_index, axis=axis)
+    return df
+
+def file_split_axes_to_multiindex(file, in_format=None, out_format=None, sep="_",
+                                  inplace=False, destfol=None, destfbname=None):
+    sheets, frmt = read_sheets(file, frmt=in_format)
+    ndfs = {}
+    for name, dict_ in sheets.items():
+        df = dict_["df"]
+        ndfs[name] = df_split_axes_to_multiindex(df, sep=sep)
+    if inplace:
+        destfol, fname = helpers.split(file)
+        destfbname, _ = os.path.splitext(fname)
+    write_sheets(ndfs, destfol=destfol, destfbname=destfbname, frmt=out_format if out_format else frmt)
+    if inplace and out_format and frmt != out_format:
+        os.remove(file)
+        
     
 def process_recursively(path: str, file_func: Callable[..., None], destination=None,
                         out_format=None, inplace=False, formats_to_process=None,
@@ -1636,6 +1677,8 @@ def process_command(args):
         elif args.multiindex_fix_missing_cells:
             split_func = fix_missing_cells_multiindex
             logger.info("One liners to read the sheets here below:")
+        elif args.split_axes:
+            split_func = file_split_axes_to_multiindex
         if os.path.isfile(args.source):
             if args.in_formats:
                 logger.info("You passed a --in-format argument but this will be ignored since your source is a file. The extension will be detected from the filename.")
@@ -1650,6 +1693,8 @@ def process_command(args):
                         assert ext_out == helpers.harmonize_ext(args.out_format), "The destination is a filepath that does not match the desired output format!!"
             else:
                 destfol, destfbname = None, None
+            logger.debug(f"inplace: {args.inplace}")
+            logger.debug(f"{split_func}")
             split_func(args.source, in_format=ext, out_format=out_format, inplace=args.inplace,
                        destfol=destfol, destfbname=destfbname)
         elif os.path.isdir(args.source):
@@ -1739,6 +1784,14 @@ def cli():
         dest='in_formats',
         help=f'The extension(s) to process if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") either without using space or wrapping it in quotation marks.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
     )
+    
+    parser_process.add_argument(
+        '--str-sep',
+        type=str,
+        dest='str_sep',
+        help='the separator within strings to split them. Used only by --split-axes'
+    )
+    
 
     # 2. Mutually Exclusive Group for output location (Required for PROCESS)
     location_group_process = parser_process.add_mutually_exclusive_group(required=True)
@@ -1750,7 +1803,7 @@ def cli():
         help='Modify the source file(s) in-place.'
     )
     location_group_process.add_argument(
-        '--destination', '--dest',
+        '--destination', '--dest', '-d',
         type=str,
         dest='destination',
         help='The destination file or directory for the output.'
@@ -1786,6 +1839,7 @@ def cli():
     process_group.add_argument('--split-all-tables', '--splitall', action='store_true', help='Split all multitables')
     process_group.add_argument('--split-to-multiindex', '--multiindex', '--multi-idx', action='store_true', help='Turn multi-tables into a MultiIndex')
     process_group.add_argument('--multiindex-fix-missing-cells', '--fix-multiindex', '--multi-idx-fix', action='store_true', help='Uses a forward fill for missing cells in header or index columns')
+    process_group.add_argument('--split-axes', '--split-axis', action='store_true', help='Splits strings in axes labels to obtain a multiIndex')
     
     
     # Mutually Exclusive Group for 'check' options
