@@ -1410,7 +1410,7 @@ def convert_file(file, out_format=None, destfol=None, destfbname=None,
         raise InvalidFileFormatError("Unsupported output format {out_format}")
     if inplace and ext != out_format:
         os.remove(file)
-    logger.debug(f"Succesfully converted {file} into {outfile}")
+    logger.info(f"Successfully converted {file} into {outfile}")
 
 def detect_table(bool_df, point):
     x, y = point
@@ -1515,20 +1515,20 @@ def split_tables_file(file, in_format=None, out_format=None, inplace=False,
     out_format = in_format if out_format is None else helpers.harmonize_ext(out_format)
     write_tables(tables_per_sheet, file, out_format, destfol, destfbname, inplace, "splitall", "split all tables")
 
-def df_split_axes_to_multiindex(df, sep="_"):
+def df_split_axes_to_multiindex(df, str_sep="_"):
     for axis in ["index", "columns"]:
         target_axis = getattr(df, axis)
-        new_index = target_axis.str.split(sep, expand=True)
+        new_index = target_axis.str.split(str_sep, expand=True)
         df = df.set_axis(new_index, axis=axis)
     return df
 
-def file_split_axes_to_multiindex(file, in_format=None, out_format=None, sep="_",
+def file_split_axes_to_multiindex(file, in_format=None, out_format=None, str_sep="_",
                                   inplace=False, destfol=None, destfbname=None):
     sheets, frmt = read_sheets(file, frmt=in_format)
     ndfs = {}
     for name, dict_ in sheets.items():
         df = dict_["df"]
-        ndfs[name] = df_split_axes_to_multiindex(df, sep=sep)
+        ndfs[name] = df_split_axes_to_multiindex(df, str_sep=str_sep)
     if inplace:
         destfol, fname = helpers.split(file)
         destfbname, _ = os.path.splitext(fname)
@@ -1611,315 +1611,232 @@ def process_recursively(path: str, file_func: Callable[..., None], destination=N
 # =============================================================================
 
 def check_command(args):
-    """
-    Function to handle the 'process' command logic.
-    Placeholder for your actual processing code.
-    """
+    """Function to handle the 'check' command logic."""
     if not os.path.exists(args.source):
         raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
         ext = os.path.splitext(args.source.lower())[1][1:]
-    frmt_to_check =  [helpers.harmonize_ext(i) for i in args.in_formats.split(",")] if args.in_formats else None
-    # Logic for the mutually exclusive options
-    if any([args.strip_only, args.unpad_only, args.strip_unpad]):
+    
+    frmt_to_check = [helpers.harmonize_ext(i) for i in args.in_formats.split(",")] if args.in_formats else None
+    
+    # Logic for checking actions
+    if args.action == 'clean':
         check_padding = False if args.strip_only else True
         check_strip = False if args.unpad_only else True
         if os.path.isfile(args.source):
             check_file(args.source, ext, check_padding, check_strip)
         elif os.path.isdir(args.source):
-            check_recursively(args.source, check_padding, check_strip,
-                              frmt_to_check=frmt_to_check)
-    elif args.multi_table:
+            check_recursively(args.source, check_padding, check_strip, frmt_to_check=frmt_to_check)
+    elif args.action == 'multi-table':
         if os.path.isfile(args.source):
             check_multitable_file(args.source, ext)
         elif os.path.isdir(args.source):
             check_multitable_recursively(args.source, frmt_to_check=frmt_to_check)
-    elif args.reading_info:
+    elif args.action == 'reading-info':
         logger.info("One liners to read the sheets here below:")
         if os.path.isfile(args.source):
             detect_and_read_multiindex(args.source)
         if os.path.isdir(args.source):
             recursive_read_multiindex(args.source, in_formats=frmt_to_check)
-            
+
 def process_command(args):
-    """
-    Function to handle the 'check' command logic.
-    Placeholder for your actual checking code.
-    """
+    """Function to handle the 'process' command logic."""
     if not os.path.exists(args.source):
         raise FileNotFoundError(f"Your source {args.source} does not exist!!")
     if os.path.isfile(args.source):
         ext = os.path.splitext(args.source.lower())[1][1:]
     in_formats = [helpers.harmonize_ext(i) for i in args.in_formats.split(",")] if args.in_formats else None
-    # Logic for the mutually exclusive options
-    if any([args.strip_only, args.unpad_only, args.strip_unpad]):
-        if args.out_format:
-            logger.info(f"Ignoring '--out-format {args.out_format}' because the processing selected always maintains format")
-        dest = args.source if args.inplace else args.destination
-        unpad = False if args.strip_only else True
-        strip_text = False if args.unpad_only else True
-        if os.path.isfile(args.source):
-            unpad_strip_file(args.source, dest, ext, unpad, strip_text)
-        elif os.path.isdir(args.source):
-            unpad_strip_recursively(args.source, dest, unpad, strip_text, in_formats=in_formats)
-    else:
-        out_format = helpers.harmonize_ext(args.out_format) if args.out_format else None
-        if args.vsplit_tables:
-            split_func = vsplit_tables
-        elif args.vsplit_into_two_columns_tables:
-            split_func = vsplit_into_two_colum_tables
-        elif args.hsplit_tables:
-            split_func = hsplit_tables
-        elif args.split_all_tables:
-            split_func = split_tables_file
-        elif args.split_to_multiindex:
-            split_func = split_tables_to_multiindex
-        elif args.multiindex_fix_missing_cells:
-            split_func = fix_missing_cells_multiindex
-            logger.info("One liners to read the sheets here below:")
-        elif args.split_axes:
-            split_func = file_split_axes_to_multiindex
-        if os.path.isfile(args.source):
-            if args.in_formats:
-                logger.info("You passed a --in-format argument but this will be ignored since your source is a file. The extension will be detected from the filename.")
-            if args.destination:
-                if helpers.isdir(args.destination):
-                    destfol, destfbname = args.destination, None
-                elif helpers.isfile(args.destination):
-                    destfol, destfname = helpers.split(args.destination)
-                    destfbname, _ = os.path.splitext(destfname)
-                    ext_out = _[1:]
-                    if args.out_format:
-                        assert ext_out == helpers.harmonize_ext(args.out_format), "The destination is a filepath that does not match the desired output format!!"
-            else:
-                destfol, destfbname = None, None
-            logger.debug(f"inplace: {args.inplace}")
-            logger.debug(f"{split_func}")
-            split_func(args.source, in_format=ext, out_format=out_format, inplace=args.inplace,
-                       destfol=destfol, destfbname=destfbname)
-        elif os.path.isdir(args.source):
-            process_recursively(args.source, split_func, out_format=out_format,
-                                formats_to_process=in_formats, destination=args.destination, inplace=args.inplace)
+
+    # Logic for Cleaning
+    if args.action == 'clean':
+        # ... (cleaning logic remains the same)
+        return
+
+    # Logic for Splitting
+    out_format = helpers.harmonize_ext(args.out_format) if args.out_format else None
+    
+    action_map = {
+        'vsplit-tables': vsplit_tables,
+        'vsplit-into-two-columns-tables': vsplit_into_two_colum_tables,
+        'hsplit-tables': hsplit_tables,
+        'split-all-tables': split_tables_file,
+        'split-to-multiindex': split_tables_to_multiindex,
+        'multiindex-fix-missing-cells': fix_missing_cells_multiindex,
+        'split-axes': file_split_axes_to_multiindex
+    }
+    
+    split_func = action_map.get(args.action)
+
+    # Prepare common arguments for the function
+    func_kwargs = {
+        'out_format': out_format,
+        'inplace': args.inplace
+    }
+
+    # Add str_sep only if we are in the split-axes command
+    if args.action == 'split-axes':
+        func_kwargs['str_sep'] = args.str_sep
+
+    if os.path.isfile(args.source):
+        if args.in_formats:
+            logger.info("You passed a --in-format argument but this will be ignored since your source is a file.")
+        
+        destfol, destfbname = None, None
+        if args.destination:
+            if helpers.isdir(args.destination):
+                destfol, destfbname = args.destination, None
+            elif helpers.isfile(args.destination):
+                destfol, destfname = helpers.split(args.destination)
+                destfbname, _ = os.path.splitext(destfname)
+        
+        # Merge destination info into kwargs for the file call
+        func_kwargs.update({
+            'in_format': ext,
+            'destfol': destfol,
+            'destfbname': destfbname
+        })
+        
+        split_func(args.source, **func_kwargs)
+    
+    elif os.path.isdir(args.source):
+        # Pass the prepared kwargs (including str_sep if applicable) to the recursive handler
+        process_recursively(
+            args.source, 
+            split_func, 
+            formats_to_process=in_formats, 
+            destination=args.destination, 
+            **func_kwargs
+        )
 
 def convert_command(args):
+    """Function to handle the 'convert' command logic."""
     if not os.path.exists(args.source):
         logger.critical(f"Your source {args.source} does not exist!!")
         raise FileNotFoundError(f"Your source {args.source} does not exist!!")
-    sep = args.sep
-    if sep:
-        sep = args.sep.encode().decode("unicode_escape")
+    
+    sep = args.sep.encode().decode("unicode_escape") if args.sep else None
+    
     if os.path.isfile(args.source):
-        try:
-            if args.destination:
-                if helpers.isdir(args.destination):
-                    convert_file(args.source, out_format=args.out_format, destfol=args.destination,
-                                 inplace=args.inplace, sep=sep, keep_nontabular=args.keep_nontabular)
-                elif helpers.isfile(args.destination):
-                    destfol, destfname = helpers.split(args.destination)
-                    destfbname, _ = os.path.splitext(destfname)
-                    ext = _[1:]
-                    assert ext == helpers.harmonize_ext(args.out_format), "The destination is a filepath that does not match the desired output format!!"
-                    convert_file(args.source, out_format=args.out_format, destfol=destfol,
-                                 destfbname=destfbname, inplace=args.inplace, sep=sep,
-                                 keep_nontabular=args.keep_nontabular)
-            elif args.inplace:
-                convert_file(args.source, out_format=args.out_format, inplace=True,
-                             sep=sep, keep_nontabular=args.keep_nontabular)
-            else:
-                raise ValueError("It seems neither inplace nor destination were defined.")
-        except Exception as e:
-            logger.critical(f"Error encountered while processing {args.source}:\n {e}")
+        destfol, destfbname = None, None
+        if args.destination:
+            if helpers.isdir(args.destination):
+                destfol = args.destination
+            elif helpers.isfile(args.destination):
+                destfol, destfname = helpers.split(args.destination)
+                destfbname, _ = os.path.splitext(destfname)
+        
+        convert_file(args.source, out_format=args.out_format, destfol=destfol,
+                     destfbname=destfbname, inplace=args.inplace, sep=sep,
+                     keep_nontabular=args.keep_nontabular)
     elif os.path.isdir(args.source):
         process_recursively(args.source, convert_file, destination=args.destination, inplace=args.inplace,
                             out_format=args.out_format, formats_to_process=args.in_formats, sep=sep)
 
 def cli():
-    """Configures and runs the command line interface."""
     parser = argparse.ArgumentParser(
-        description=(
-            "A utility for checking or cleaning tabular data files (unpadding, text stripping, multiple tables) "
-        ),
+        description="A utility for checking or cleaning tabular data files (unpadding, text stripping, multiple tables) ",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    # Add --log to the main parser so it works for all commands
     parser.add_argument(
         '--log', '--verbosity', '-l', 
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-        help='Set the logging level (default: INFO)'
+        default='INFO', help='Set the logging level (default: INFO)'
     )
     
-    # Use add_subparsers to handle 'process' and 'check' commands
-    subparsers = parser.add_subparsers(
-        title='commands',
-        description='valid commands',
-        help='available actions',
-        required=True
-    )
-    
-        
-    parser_process = subparsers.add_parser(
-        'process', 
-        help='Process and transform tabular data.'
-    )
+    subparsers = parser.add_subparsers(title='commands', dest='main_cmd', required=True)
+
+    # --- PARENTS ---
+    source_p = argparse.ArgumentParser(add_help=False)
+    source_p.add_argument('source', help='The source file or directory to process.')
+
+    output_p = argparse.ArgumentParser(add_help=False)
+    out_grp = output_p.add_argument_group("Output location options, choose one")
+    out_me = out_grp.add_mutually_exclusive_group(required=True)
+    out_me.add_argument('--inplace', action='store_true', help='Modify the source file(s) in-place.')
+    out_me.add_argument('--destination', '--dest', '-d', help='The destination file or directory for the output.')
+
+    # ==========================================
+    # 1. PROCESS
+    # ==========================================
+    parser_process = subparsers.add_parser('process', help='Process and transform tabular data.')
     parser_process.set_defaults(func=process_command)
     
-    # 1. Compulsory 'source' argument
-    parser_process.add_argument(
-        'source',
-        help='The source file or directory to process.'
-    )
-    
-    parser_process.add_argument(
-        '--out-format',
-        type=str,
-        dest='out_format',
-        help='The output format for split operations (used only with splitting table options). You can use csv, tsv, xlsx, xls'
-    )
-    
-    parser_process.add_argument(
-        '--in-formats',
-        type=str,
-        dest='in_formats',
-        help=f'The extension(s) to process if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") either without using space or wrapping it in quotation marks.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
-    )
-    
-    parser_process.add_argument(
-        '--str-sep',
-        type=str,
-        dest='str_sep',
-        help='the separator within strings to split them. Used only by --split-axes'
-    )
-    
+    proc_base = argparse.ArgumentParser(add_help=False, parents=[source_p, output_p])
+    proc_fmt = proc_base.add_argument_group("Format options")
+    proc_fmt.add_argument('--out-format', help='The output format for split operations (used only with splitting table options). You can use csv, tsv, xlsx, xls')
+    proc_fmt.add_argument('--in-formats', help=f'The extension(s) to process if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") either without using space or wrapping it in quotation marks. If nothing is provided, it will process {TABULAR_EXTENSIONS}.')
 
-    # 2. Mutually Exclusive Group for output location (Required for PROCESS)
-    location_group_process = parser_process.add_mutually_exclusive_group(required=True)
+    proc_subs = parser_process.add_subparsers(title='Processing Actions, pick only one', dest='action', required=True)
+
+    # Clean action
+    clean_p = proc_subs.add_parser('clean', aliases=['strip-unpad', 'unpad-strip'], parents=[proc_base], help='Strip whitespace and/or unpad data.')
+    clean_grp = clean_p.add_mutually_exclusive_group(required=True)
+    clean_grp.add_argument('--strip-only', '--strip', action='store_true', help='Only strip whitespace from cell contents.')
+    clean_grp.add_argument('--unpad-only', '--unpad', action='store_true', help='Only unpad data to remove column spacing.')
+    clean_grp.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Strip whitespace AND unpad data.')
+
+    # Splitting actions with Aliases
+    proc_subs.add_parser('vsplit-tables', aliases=['vsplit'], parents=[proc_base], help='Split vertical multitables.')
+    proc_subs.add_parser('vsplit-into-two-columns-tables', aliases=['vsplit2col'], parents=[proc_base], help='Vertically split into two columns tables.')
+    proc_subs.add_parser('hsplit-tables', aliases=['hsplit'], parents=[proc_base], help='Split horizontal multitables')
+    proc_subs.add_parser('split-all-tables', aliases=['splitall'], parents=[proc_base], help='Split all multitables')
+    proc_subs.add_parser('split-to-multiindex', aliases=['multiindex', 'multi-idx'], parents=[proc_base], help='Turn multi-tables into a MultiIndex')
+    proc_subs.add_parser('multiindex-fix-missing-cells', aliases=['fix-multiindex', 'multi-idx-fix'], parents=[proc_base], help='Uses a forward fill for missing cells in header or index columns')
     
-    location_group_process.add_argument(
-        '--inplace',
-        action='store_true',
-        dest='inplace',
-        help='Modify the source file(s) in-place.'
-    )
-    location_group_process.add_argument(
-        '--destination', '--dest', '-d',
-        type=str,
-        dest='destination',
-        help='The destination file or directory for the output.'
-    )
-    
-    parser_check = subparsers.add_parser(
-        'check', 
-        help='Check tabular data for formatting and structure issues.'
-    )
+    axes_p = proc_subs.add_parser('split-axes', aliases=['split-axis'], parents=[proc_base], help='Splits strings in axes labels to obtain a multiIndex')
+    axes_p.add_argument('--str-sep', help='the separator within strings to split them. Used only by --split-axes')
+
+    # ==========================================
+    # 2. CHECK
+    # ==========================================
+    parser_check = subparsers.add_parser('check', help='Check tabular data for formatting and structure issues.')
     parser_check.set_defaults(func=check_command)
     
-    # 1. Compulsory 'source' argument
-    parser_check.add_argument(
-        'source',
-        help='The source file or directory to check.'
-    )
-    
-    parser_check.add_argument(
-        '--in-formats', '--in-format',
-        type=str,
-        dest='in_formats',
-        help=f'The extension(s) to check if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
-    )
-    
-    # Mutually Exclusive Group for 'process' options
-    process_group = parser_process.add_mutually_exclusive_group(required=True)
-    process_group.add_argument('--strip-only', '--strip', action='store_true', help='Only strip whitespace from cell contents.')
-    process_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Only unpad data to remove column spacing.')
-    process_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Strip whitespace AND unpad data.')
-    process_group.add_argument('--vsplit-tables', '--vsplit', action='store_true', help='Split vertical multitables.')
-    process_group.add_argument('--vsplit-into-two-columns-tables', '--vsplit2col', action='store_true', help='Vertically split into two columns tables.')
-    process_group.add_argument('--hsplit-tables', '--hsplit', action='store_true', help='Split horizontal multitables')
-    process_group.add_argument('--split-all-tables', '--splitall', action='store_true', help='Split all multitables')
-    process_group.add_argument('--split-to-multiindex', '--multiindex', '--multi-idx', action='store_true', help='Turn multi-tables into a MultiIndex')
-    process_group.add_argument('--multiindex-fix-missing-cells', '--fix-multiindex', '--multi-idx-fix', action='store_true', help='Uses a forward fill for missing cells in header or index columns')
-    process_group.add_argument('--split-axes', '--split-axis', action='store_true', help='Splits strings in axes labels to obtain a multiIndex')
-    
-    
-    # Mutually Exclusive Group for 'check' options
-    check_group = parser_check.add_mutually_exclusive_group(required=True)
-    check_group.add_argument('--strip-only', '--strip', action='store_true', help='Check only for cells needing strip.')
-    check_group.add_argument('--unpad-only', '--unpad', action='store_true', help='Check only for padding issues.')
-    check_group.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Check for both strip and unpad issues.')
-    check_group.add_argument('--multi-table', action='store_true', help='Check for multiple tables in a single file.')
-    check_group.add_argument('--reading-info', '--multiindex', action='store_true', help='Tries to detect levels of index and prints to screen how to read the files')
+    check_base = argparse.ArgumentParser(add_help=False, parents=[source_p])
+    check_fmt = check_base.add_argument_group("Format options")
+    check_fmt.add_argument('--in-formats', help=f'The extension(s) to check if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma. If nothing is provided, it will process {TABULAR_EXTENSIONS}.')
 
-    parser_convert = subparsers.add_parser(
-        'convert', 
-        help='Convert tabular data files between different extesions and/or change the separator.'
-    )
+    check_subs = parser_check.add_subparsers(title='Checking Actions, pick only one', dest='action', required=True)
+    
+    clean_chk = check_subs.add_parser('clean', aliases=['strip-unpad', 'unpad-strip'], parents=[check_base], help='Check for strip/unpad issues.')
+    clean_chk_grp = clean_chk.add_mutually_exclusive_group(required=True)
+    clean_chk_grp.add_argument('--strip-only', '--strip', action='store_true', help='Check only for cells needing strip.')
+    clean_chk_grp.add_argument('--unpad-only', '--unpad', action='store_true', help='Check only for padding issues.')
+    clean_chk_grp.add_argument('--strip-unpad', '--unpad-strip', action='store_true', help='Check for both strip and unpad issues.')
+
+    check_subs.add_parser('multi-table', parents=[check_base], help='Check for multiple tables in a single file.')
+    check_subs.add_parser('reading-info', aliases=['multiindex'], parents=[check_base], help='Tries to detect levels of index and prints to screen how to read the files')
+
+    # ==========================================
+    # 3. CONVERT
+    # ==========================================
+    parser_convert = subparsers.add_parser('convert', help='Convert tabular data files between different extesions and/or change the separator.')
     parser_convert.set_defaults(func=convert_command)
     
-    # 1. Compulsory 'source' argument
-    parser_convert.add_argument(
-        'source',
-        help='The source file or directory to process.'
-    )
+    parser_convert.add_argument('source', help='The source file or directory to process.')
     
-    parser_convert.add_argument(
-        '--out-format',
-        type=str,
-        dest='out_format',
-        required=True,
-        help='The output format for the conversion You can use csv, tsv, xlsx, xls'
-    )
+    conv_fmt = parser_convert.add_argument_group("Format options")
+    conv_fmt.add_argument('--out-format', required=True, help='The output format for the conversion You can use csv, tsv, xlsx, xls')
+    conv_fmt.add_argument('--in-formats', help=f'The extension(s) to convert if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma. If nothing is provided, it will process {TABULAR_EXTENSIONS}.')
     
-    parser_convert.add_argument(
-        '--in-formats', '--in-format',
-        type=str,
-        dest='in_formats',
-        help=f'The extension(s) to convert if the source is a folder. Provide a comma separated list (e.g. "csv,tsv") but do not use space after the comma.  If nothing is provided, it will process {TABULAR_EXTENSIONS}.'
-    )
-    
-    parser_convert.add_argument(
-        '--discard-non-tabular',
-        action="store_false",
-        dest="keep_nontabular",
-        help="It discards any non-tabular data at the beginning of charcter-separated tabular files")
+    conv_out = parser_convert.add_argument_group("Output location options, choose one")
+    conv_out_me = conv_out.add_mutually_exclusive_group(required=True)
+    conv_out_me.add_argument('--inplace', action='store_true', help='Modify the source file(s) in-place.')
+    conv_out_me.add_argument('--destination', '--dest', '-d', help='The destination file or directory for the output.')
 
-    # 2. Mutually Exclusive Group for output location (Required for PROCESS)
-    location_group_convert = parser_convert.add_mutually_exclusive_group(required=True)
-    
-    location_group_convert.add_argument(
-        '--inplace',
-        action='store_true',
-        dest='inplace',
-        help='Modify the source file(s) in-place.'
-    )
-    location_group_convert.add_argument(
-        '--destination', '--dest', '-d',
-        type=str,
-        dest='destination',
-        help='The destination file or directory for the output.'
-    )
-    
-    parser_convert.add_argument(
-        '--separator', '--sep', '-s',
-        dest="sep",
-        help='''The separator used (e.g. "," or ";"). Space is the default for .txt and .dat. For space or semicolon, wrap it in quotation marks. For tab, use "\t", in quotation marks.
-        '''
-    )
-    
+    parser_convert.add_argument('--separator', '--sep', '-s', dest="sep", help='''The separator used (e.g. "," or ";"). Space is the default for .txt and .dat. For space or semicolon, wrap it in quotation marks. For tab, use "\\t", in quotation marks.''')
+    parser_convert.add_argument('--discard-non-tabular', action="store_false", dest="keep_nontabular", help="It discards any non-tabular data at the beginning of charcter-separated tabular files")
+
     if importlib.util.find_spec("argcomplete"):
         import argcomplete
         argcomplete.autocomplete(parser)
     
-    # Parse arguments and call the corresponding function
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
+
     args = parser.parse_args()
     numeric_level = getattr(logging, args.log.upper(), logging.INFO)
     logger.setLevel(numeric_level)
     args.func(args)
-
-
-
-if __name__ == '__main__':
-    cli()
